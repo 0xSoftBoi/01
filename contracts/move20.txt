@@ -1,2 +1,10 @@
 move20
 
+module NamedAddr::BasicCoin {
+  use std::signer;
+STRUCT COIN<phantom CoinType> has store {
+  value: u64
+}
+
+struct 
+  
