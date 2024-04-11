@@ -14,3 +14,5 @@ Starting on Ethereum, Zero Labs built World of Ether to XYZ monthly active users
 Zero Labs has also built its own middleware infrastructure that saves significant time and cost building a game.  With a NEW blockchain, these common sets of APIs, gaming primitives and UI elements reduces Zero Labs' time to market by a factor of X.
 
 Zero One Labs is currently live for 6 years, a layer zero solution that is a blockchain agnostic architecture that has compatibility with all evms, cosmos, solana, and it provides critical end-to-end solutions and infrastructure needs for gaming companies and such as hosting, deploying, maintaining and distributing blockchain-based games: we created a suite of tools and APIs to enable the next Cambrian explosion of gaming. We are currently seeking 10M to build open source tools for games on aptos and sui to power and convert 1B gamers into a more equitable and regenerative model for digital collectibles and leveraging ownership of IP’s, brands, etc. We are the meta steam of web3 by aggregating all platforms globally.
+
+World of Sui will be the expansion of the stack. 
