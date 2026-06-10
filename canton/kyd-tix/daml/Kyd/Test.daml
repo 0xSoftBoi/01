@@ -23,6 +23,7 @@ data Cast = Cast
     bob : Party     -- second fan / buyer
     lender : Party
     lender2 : Party
+    public : Party  -- broadcast party for the open order book
 
 setupCast : Script Cast
 setupCast = do
@@ -33,7 +34,16 @@ setupCast = do
   bob      <- allocateParty "Bob"
   lender   <- allocateParty "Lender"
   lender2  <- allocateParty "Lender2"
+  public   <- allocateParty "Public"
   pure Cast with ..
+
+-- Onboard a party into a role (operator invites, party accepts).
+onboard : Cast -> Party -> RoleType -> Script ()
+onboard c member role = do
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = member, role
+  _ <- submit member $ exerciseCmd inv Invitation_Accept
+  pure ()
 
 -- Mint operator cash to a party.
 mint : Cast -> Party -> Decimal -> Script (ContractId Cash)
@@ -398,3 +408,48 @@ testTieredDynamicPricing = do
   -- Venue collected every primary sale: 50 + 51 + 52 + 100 + 80 = 333.
   venueBal <- cashOf c.venue
   venueBal === 333.0
+
+-- 11. Open order book: a non-invited raise broadcast to the public party. Any
+--     onboarded lender discovers it and commits; non-onboarded parties are
+--     rejected at the KYC gate; once fully subscribed it converts to the same
+--     syndicated loan as the invited path.
+testOpenOrderBook : Script ()
+testOpenOrderBook = do
+  c <- setupCast
+
+  -- Two lenders hold KYC credentials; Alice does not.
+  onboard c c.lender Lender
+  onboard c c.lender2 Lender
+
+  -- Venue opens a 1,000 raise to the public book (no invite list).
+  off <- submitMulti [c.operator, c.venue] [] $ createCmd OpenFinancingOffering with
+    operator = c.operator
+    venue = c.venue
+    public = c.public
+    eventId = "SHOW-OPEN"
+    target = 1000.0
+    factorRateBps = 11000
+    revenueShareBps = 5000
+    dueDate = time (date 2026 Aug 1) 0 0 0
+    lateInterestBpsPerDay = 10
+    commitments = []
+
+  -- A non-onboarded party reading the public book still cannot commit.
+  nAlice <- mint c c.alice 100.0
+  submitMultiMustFail [c.alice] [c.public] $
+    exerciseCmd off (OpenOffering_Commit with lender = c.alice, cashCid = nAlice)
+
+  -- Onboarded lenders discover the book via readAs public and commit 600 / 400.
+  n600 <- mint c c.lender 600.0
+  off2 <- submitMulti [c.lender] [c.public] $
+    exerciseCmd off (OpenOffering_Commit with lender = c.lender, cashCid = n600)
+  n400 <- mint c c.lender2 400.0
+  off3 <- submitMulti [c.lender2] [c.public] $
+    exerciseCmd off2 (OpenOffering_Commit with lender = c.lender2, cashCid = n400)
+
+  -- Fully subscribed: activation pays the venue 1,000 and books the loan.
+  (loan, _proceeds) <- submit c.venue $ exerciseCmd off3 OpenOffering_Activate
+  venueBal <- cashOf c.venue
+  venueBal === 1000.0
+  Some loanData <- queryContractId c.operator loan
+  loanData.tranches === [Tranche c.lender2 440.0, Tranche c.lender 660.0]

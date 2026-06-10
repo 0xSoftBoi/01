@@ -172,6 +172,99 @@ template FinancingOffering
           tranches = loanTranches
         pure (loan, proceeds)
 
+-- | An open, non-invited capital raise: instead of naming lenders up front, the
+--   offering is broadcast to a well-known `public` party that every onboarded
+--   lender reads, forming a public order book. Eligibility is enforced at commit
+--   time — only parties holding a 'Lender' membership ('Kyd.Roles') can fund —
+--   so the KYC gate moves from an allow-list to on-ledger credentials. Once
+--   fully subscribed it converts to the same 'SyndicatedLoan' as the invited
+--   path.
+template OpenFinancingOffering
+  with
+    operator : Party
+    venue : Party
+    public : Party                -- broadcast party every lender reads
+    eventId : Text
+    target : Decimal
+    factorRateBps : Int
+    revenueShareBps : Int
+    dueDate : Time
+    lateInterestBpsPerDay : Int
+    commitments : [LenderCommitment]
+  where
+    signatory operator, venue
+    observer public
+    ensure target > 0.0
+        && factorRateBps >= 10000
+        && revenueShareBps > 0 && revenueShareBps <= 10000
+        && lateInterestBpsPerDay >= 0
+        && sum (map (\c -> c.amount) commitments) <= target
+
+    -- | Any onboarded lender discovers the book (via `public`) and commits.
+    --   Flexible controller: the lender authorizes with its own cash; the
+    --   'Lender' membership lookup is the KYC gate.
+    choice OpenOffering_Commit : ContractId OpenFinancingOffering
+      with
+        lender : Party
+        cashCid : ContractId Cash
+      controller lender
+      do
+        _ <- fetchByKey @Membership (operator, lender, Lender)
+        assertMsg "lender has already committed"
+          (not (any (\c -> c.lender == lender) commitments))
+        cash <- fetch cashCid
+        assertMsg "commit from the lender's own cash" (cash.owner == lender)
+        let committed = sum (map (\c -> c.amount) commitments)
+        assertMsg "commitment would exceed the remaining allocation"
+          (committed + cash.amount <= target)
+        disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
+        escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
+        let c = LenderCommitment with lender, amount = cash.amount, escrow
+        create this with commitments = c :: commitments
+
+    -- | A lender withdraws before activation and is refunded from escrow.
+    choice OpenOffering_Uncommit : ContractId OpenFinancingOffering
+      with lender : Party
+      controller lender
+      do
+        let mine   = filter (\c -> c.lender == lender) commitments
+            others = filter (\c -> c.lender /= lender) commitments
+        case mine of
+          [c] -> do
+            refund <- exercise c.escrow (Cash_Transfer with newOwner = lender)
+            _ <- exercise refund (Cash_Disclose with parties = [])
+            create this with commitments = others
+          _ -> abort "no commitment to withdraw"
+
+    -- | Venue cancels the raise; every escrowed commitment is refunded.
+    choice OpenOffering_Cancel : ()
+      controller venue
+      do
+        _ <- forA commitments (\c -> exercise c.escrow (Cash_Transfer with newOwner = c.lender))
+        pure ()
+
+    -- | Fully subscribed: principal to the venue, syndicated loan booked.
+    choice OpenOffering_Activate : (ContractId SyndicatedLoan, [ContractId Cash])
+      controller venue
+      do
+        let committed = sum (map (\c -> c.amount) commitments)
+        assertMsg "offering is not fully subscribed" (committed == target)
+        proceeds <- forA commitments $ \c -> do
+          released <- exercise c.escrow (Cash_Transfer with newOwner = venue)
+          exercise released (Cash_Disclose with parties = [])
+        let factor = intToDecimal factorRateBps / 10000.0
+            loanTranches = map (\c -> Tranche c.lender (c.amount * factor)) commitments
+        loan <- create SyndicatedLoan with
+          operator
+          venue
+          eventId
+          revenueShareBps
+          dueDate
+          lateInterestBpsPerDay
+          lastAccrual = dueDate
+          tranches = loanTranches
+        pure (loan, proceeds)
+
 -- | The syndicate's claim on the venue. Repayment is enforced two ways:
 --   ticket revenue settles through 'Loan_SettleRevenue' (the contract takes the
 --   lenders' share before returning the remainder to the venue), and the venue

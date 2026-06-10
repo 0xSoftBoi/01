@@ -9,7 +9,7 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 11 test scenarios pass on Daml SDK **2.10.4**.
+It builds and all 12 test scenarios pass on Daml SDK **2.10.4**.
 
 ```
 daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
@@ -96,7 +96,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
 | `Kyd.Event` | `Event` (tiered), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
-| `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program + tranche secondary market |
+| `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, tranche secondary market |
 
 ### Lifecycle
 
@@ -117,8 +117,11 @@ ResaleOffer.Accept(cash):                                (atomic DvP)
     ticket   -> buyer
 Ticket.Ticket_CheckIn -> redeemed (resale now blocked)   (door scan)
 
-venue+operator: FinancingOffering (invited lenders)      (TIX: open the raise)
+venue+operator: FinancingOffering (invited lenders)      (TIX: targeted raise)
+              | OpenFinancingOffering (observer: public)  (TIX: open order book)
 Offering_Commit(cash) per lender --> escrow w/ operator  (lock-by-safekeeping)
+  open book: any lender holding a Lender membership       (KYC gate, no invite)
+             reads `public` to discover and commit
   Offering_Uncommit / Offering_Cancel --> refunds        (escape hatches)
 Offering_Activate [fully subscribed]:                    (atomic)
     principal -> venue
@@ -141,6 +144,18 @@ revenue without the lenders' share being carved out first. The tranche market
 clears through the operator (joint controller), mirroring the agent-bank role
 in real syndications, and buyers must hold a `Lender` membership — an on-ledger
 KYC gate for the RWA story.
+
+### Targeted vs. open financing (the public-party pattern)
+
+A contract is only visible to its stakeholders, so an *open* raise needs a way
+for unknown lenders to discover it. `OpenFinancingOffering` is observed by a
+well-known **`public`** party that every onboarded lender reads (`readAs`),
+forming a public order book — the standard Canton broadcast pattern. Eligibility
+moves from an invite list to **on-ledger credentials**: `OpenOffering_Commit`
+looks up the committer's `Lender` membership (`Kyd.Roles`) as a KYC gate, so
+anyone with a credential can fund and nobody else can. Both paths converge on
+the same `SyndicatedLoan`, so settlement, the waterfall and the tranche market
+are identical downstream.
 
 ### TIX worked example (from `testSyndicatedFinancing`)
 
@@ -201,11 +216,13 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
     (stale prices rejected) while VIP stays flat; per-purchase resale caps;
     independent tier sell-out; artist repricing; unauthorized repricing
     rejected
+11. `testOpenOrderBook` — non-invited raise broadcast to the public party;
+    onboarded lenders discover and commit via `readAs public`; non-onboarded
+    party rejected at the KYC gate; converts to the same syndicated loan
 
 ---
 
 ## Not in scope (next steps)
 
-- Open (non-invited) financing offerings with a public order book.
 - Daml Triggers to auto-fill purchase orders and run late-interest accrual.
 - A `daml2js` codegen front-end + JSON API for the existing KYD web app.
