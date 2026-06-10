@@ -25,6 +25,7 @@ module Kyd.Tix where
 import DA.Time (addRelTime, convertRelTimeToMicroseconds, days, subTime)
 
 import Kyd.Cash
+import Kyd.Roles
 
 -- | One lender's slice of the syndicate: how much it is still owed.
 data Tranche = Tranche
@@ -195,6 +196,11 @@ template SyndicatedLoan
         && revenueShareBps > 0 && revenueShareBps <= 10000
         && lateInterestBpsPerDay >= 0
 
+    -- One active facility per event, addressable by key so primary-sale
+    -- settlement and tranche transfers can find the live register.
+    key (operator, eventId) : (Party, Text)
+    maintainer key._1
+
     -- | Direct paydown: split pro-rata across all tranches simultaneously.
     --   Archived (returns None) once every lender is made whole.
     choice Loan_Distribute : Optional (ContractId SyndicatedLoan)
@@ -251,3 +257,82 @@ template SyndicatedLoan
         create this with
           tranches = map (\t -> t with outstanding = t.outstanding + t.outstanding * rate) tranches
           lastAccrual = addRelTime lastAccrual (days lateDays)
+
+    -- | A lender lists part (or all) of its tranche for sale to a named buyer
+    --   at an agreed price (discount or premium to face). Nonconsuming: the
+    --   register keeps amortizing while the offer is open, so the face amount
+    --   is re-checked against the live register at execution.
+    nonconsuming choice Loan_OfferTranche : ContractId TrancheOffer
+      with
+        seller : Party
+        buyer : Party
+        faceAmount : Decimal
+        price : Decimal
+      controller seller
+      do
+        let sellerOut = sum (map (\t -> t.outstanding) (filter (\t -> t.lender == seller) tranches))
+        assertMsg "seller holds no tranche in this loan" (sellerOut > 0.0)
+        assertMsg "face amount must be positive and within the seller's outstanding"
+          (faceAmount > 0.0 && faceAmount <= sellerOut)
+        create TrancheOffer with operator, eventId, seller, buyer, faceAmount, price
+
+    -- | Registrar step of a tranche sale: move `faceAmount` of claim from
+    --   seller to buyer on the register. Exercised by the operator from within
+    --   'TrancheOffer_Accept', atomically with the buyer's payment.
+    choice Loan_ExecuteTrancheTransfer : ContractId SyndicatedLoan
+      with
+        seller : Party
+        buyer : Party
+        faceAmount : Decimal
+      controller operator
+      do
+        case filter (\t -> t.lender == seller) tranches of
+          [st] -> do
+            assertMsg "face amount exceeds the seller's current outstanding"
+              (faceAmount <= st.outstanding)
+            let others = filter (\t -> t.lender /= seller && t.lender /= buyer) tranches
+                buyerOut = sum (map (\t -> t.outstanding) (filter (\t -> t.lender == buyer) tranches))
+                sellerRest = [Tranche seller (st.outstanding - faceAmount) | st.outstanding > faceAmount]
+            create this with
+              tranches = others ++ sellerRest ++ [Tranche buyer (buyerOut + faceAmount)]
+          _ -> abort "seller does not hold a tranche in this loan"
+
+-- | A live secondary-market listing for a slice of a syndicated loan. Accepting
+--   pays the seller and updates the loan register in one atomic transaction
+--   (delivery-vs-payment). Buyers must be onboarded lenders ('Kyd.Roles').
+template TrancheOffer
+  with
+    operator : Party
+    eventId : Text
+    seller : Party
+    buyer : Party
+    faceAmount : Decimal
+    price : Decimal
+  where
+    signatory operator, seller
+    observer buyer
+    ensure faceAmount > 0.0 && price > 0.0 && buyer /= seller
+
+    -- | Buyer accepts, jointly with the operator: the trade clears through the
+    --   platform (the operator is the registrar and the only party guaranteed
+    --   to see the live loan register), like an agent bank in a syndication.
+    choice TrancheOffer_Accept : ContractId SyndicatedLoan
+      with cashCid : ContractId Cash
+      controller buyer, operator
+      do
+        -- KYC gate: the secondary market is open only to onboarded lenders.
+        _ <- fetchByKey @Membership (operator, buyer, Lender)
+        cash <- fetch cashCid
+        assertMsg "payment must come from the buyer" (cash.owner == buyer)
+        assertMsg "payment must equal the agreed price" (cash.amount == price)
+        _ <- exercise cashCid (Cash_Transfer with newOwner = seller)
+        exerciseByKey @SyndicatedLoan (operator, eventId)
+          (Loan_ExecuteTrancheTransfer with seller, buyer, faceAmount)
+
+    choice TrancheOffer_Withdraw : ()
+      controller seller
+      do pure ()
+
+    choice TrancheOffer_Reject : ()
+      controller buyer
+      do pure ()

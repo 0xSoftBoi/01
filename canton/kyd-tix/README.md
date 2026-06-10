@@ -9,7 +9,7 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 8 test scenarios pass on Daml SDK **2.10.4**.
+It builds and all 10 test scenarios pass on Daml SDK **2.10.4**.
 
 ```
 daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
@@ -94,16 +94,20 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
 | `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
-| `Kyd.Event` | `Event` | Event/collection program + mint authority |
+| `Kyd.Event` | `Event`, `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
-| `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan` | The TIX financing/settlement program |
+| `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program + tranche secondary market |
 
 ### Lifecycle
 
 ```
 operator --Invitation--> venue/artist/fan/lender        (onboarding)
 venue+artist+operator: create Event                      (primary issuance authority)
-Event.Event_Issue ----> Ticket (owner = fan)             (primary sale, issued++)
+Event.Event_Issue ----> Ticket (owner = fan)             (comps/door sales, issued++)
+fan: PurchaseOrder --Fill(operator)-->                   (paid primary sale, atomic:)
+    payment -> venue
+    revenue share -> lenders via the active loan         (unbypassable routing)
+    Ticket -> fan
 Ticket.Ticket_Offer --> ResaleOffer  [price <= cap]      (locks the ticket)
 ResaleOffer.Accept(cash):                                (atomic DvP)
     royalty  -> artist
@@ -122,7 +126,19 @@ Loan_SettleRevenue(sale cash):                           (auto-enforced repaymen
 Loan_Distribute(cash) --> pro-rata waterfall             (direct paydown)
 Loan_AccrueLateInterest [past dueDate]                   (simple interest / late day)
 ... archived when every tranche reaches zero
+
+lender: Loan_OfferTranche --> TrancheOffer               (secondary market listing)
+TrancheOffer_Accept(cash) [buyer + operator]:            (atomic DvP, KYC-gated)
+    price -> seller; register: face moves seller -> buyer
 ```
+
+The paid primary sale is the piece that makes TIX's *"ticket revenue
+automatically enforces repayment"* literal on Canton: issuance, payment and
+loan settlement are one transaction, so the venue cannot receive primary
+revenue without the lenders' share being carved out first. The tranche market
+clears through the operator (joint controller), mirroring the agent-bank role
+in real syndications, and buyers must hold a `Lender` membership — an on-ledger
+KYC gate for the RWA story.
 
 ### TIX worked example (from `testSyndicatedFinancing`)
 
@@ -158,14 +174,18 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
    full payoff
 7. `testOfferingCancelAndUncommit` — lender withdrawal and venue cancellation
    both refund escrow in full
+8. `testPaidPrimarySaleRoutesRevenue` — a fan's purchase order fills atomically:
+   payment, loan revenue-share carve-out and ticket mint in one transaction;
+   underpayment cannot fill
+9. `testTrancheSecondaryTrading` — tranche sold at a discount via atomic DvP;
+   over-listing and non-KYC'd buyers rejected; the buyer participates pro-rata
+   in subsequent distributions
 
 ---
 
 ## Not in scope (next steps)
 
-- Wiring `Loan_SettleRevenue` directly into primary-sale flow (today the venue
-  routes sale proceeds through the loan; an operator automation/trigger would
-  make it fully hands-off, matching TIX's "automatic enforcement").
-- Open (non-invited) offerings and secondary trading of tranches between lenders.
+- Open (non-invited) financing offerings with a public order book.
 - Tiered seating and dynamic pricing curves on `Event`.
+- Daml Triggers to auto-fill purchase orders and run late-interest accrual.
 - A `daml2js` codegen front-end + JSON API for the existing KYD web app.

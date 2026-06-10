@@ -143,6 +143,19 @@ makeOffering c =
     invited = [c.lender, c.lender2]
     commitments = []
 
+-- A fully subscribed and activated syndication: lender commits 600 and
+-- lender2 400, leaving the venue with the 1,000 principal (two notes) and a
+-- loan register of [lender2 owed 440, lender owed 660].
+setupLoan : Cast -> Script (ContractId SyndicatedLoan, [ContractId Cash])
+setupLoan c = do
+  _ <- makeEvent c
+  off <- makeOffering c
+  n600 <- mint c c.lender 600.0
+  off2 <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n600)
+  n400 <- mint c c.lender2 400.0
+  off3 <- submit c.lender2 $ exerciseCmd off2 (Offering_Commit with lender = c.lender2, cashCid = n400)
+  submit c.venue $ exerciseCmd off3 Offering_Activate
+
 -- 6. TIX end-to-end: two lenders syndicate a 1,000 raise at 1.10x; repayment
 --    flows through revenue-share settlement, a direct pro-rata distribution,
 --    late-interest accrual past maturity, and a final payoff.
@@ -240,3 +253,82 @@ testOfferingCancelAndUncommit = do
   finalBal === 600.0
   offerings <- query @FinancingOffering c.venue
   length offerings === 0
+
+-- 8. Paid primary sale: a fan's purchase order fills atomically — payment to
+--    the venue, the lenders' revenue share carved out through the active loan,
+--    and the ticket minted, all in one transaction.
+testPaidPrimarySaleRoutesRevenue : Script ()
+testPaidPrimarySaleRoutesRevenue = do
+  c <- setupCast
+  _ <- setupLoan c
+
+  -- An order that underpays the 50 face price cannot be filled.
+  n40 <- mint c c.alice 40.0
+  badOrder <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", cashCid = n40
+  submitMustFail c.operator $ exerciseCmd badOrder PurchaseOrder_Fill
+
+  -- Exact face price fills: 50 paid, 50% share (25) routed pro-rata over the
+  -- register (440/660): lender2 gets 10, lender gets 15; the venue keeps 25.
+  n50 <- mint c c.alice 50.0
+  order <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", cashCid = n50
+  (_, ticketCid) <- submit c.operator $ exerciseCmd order PurchaseOrder_Fill
+
+  Some t <- queryContractId c.alice ticketCid
+  t.owner === c.alice
+  lender2Bal <- cashOf c.lender2
+  lenderBal  <- cashOf c.lender
+  venueBal   <- cashOf c.venue
+  lender2Bal === 10.0
+  lenderBal  === 15.0
+  venueBal   === 1025.0   -- 1,000 principal + the 25 retained from the sale
+  [(_, loanData)] <- query @SyndicatedLoan c.venue
+  loanData.tranches === [Tranche c.lender2 430.0, Tranche c.lender 645.0]
+
+-- 9. Secondary market: a lender sells part of its tranche to an onboarded
+--    buyer at a discount; payment and register update are one atomic DvP, and
+--    the buyer participates pro-rata in subsequent distributions.
+testTrancheSecondaryTrading : Script ()
+testTrancheSecondaryTrading = do
+  c <- setupCast
+  (loan, [p400, p600]) <- setupLoan c
+
+  -- Bob onboards as a lender (the KYC gate for the secondary market).
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = c.bob, role = Lender
+  _ <- submit c.bob $ exerciseCmd inv Invitation_Accept
+
+  -- A lender cannot list more than its outstanding claim.
+  submitMustFail c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.bob, faceAmount = 700.0, price = 600.0)
+
+  -- A non-onboarded buyer is rejected at the KYC gate.
+  offerA <- submit c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.alice, faceAmount = 100.0, price = 90.0)
+  nAlice <- mint c c.alice 90.0
+  submitMultiMustFail [c.alice, c.operator] [] $ exerciseCmd offerA (TrancheOffer_Accept with cashCid = nAlice)
+
+  -- Lender sells 300 of face to Bob for 270 (a 10% discount).
+  offer <- submit c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.bob, faceAmount = 300.0, price = 270.0)
+  n270 <- mint c c.bob 270.0
+  loan2 <- submitMulti [c.bob, c.operator] [] $ exerciseCmd offer (TrancheOffer_Accept with cashCid = n270)
+
+  Some loan2Data <- queryContractId c.operator loan2
+  loan2Data.tranches === [Tranche c.lender2 440.0, Tranche c.lender 360.0, Tranche c.bob 300.0]
+  sellerBal <- cashOf c.lender
+  sellerBal === 270.0
+
+  -- A 550 distribution over the new register (440/360/300 of 1,100):
+  -- lender2 220, lender 180, Bob 150.
+  n1000 <- submit c.venue $ exerciseCmd p600 (Cash_Merge with otherCid = p400)
+  (_kept, pay550) <- submit c.venue $ exerciseCmd n1000 (Cash_Split with splitAmount = 550.0)
+  Some _loan3 <- submit c.venue $ exerciseCmd loan2 (Loan_Distribute with cashCid = pay550)
+
+  lender2Bal <- cashOf c.lender2
+  sellerBal2 <- cashOf c.lender
+  bobBal     <- cashOf c.bob
+  lender2Bal === 220.0
+  sellerBal2 === 450.0   -- 270 sale proceeds + 180 from the distribution
+  bobBal     === 150.0
