@@ -1,0 +1,10 @@
+sdk-version: 2.10.4
+name: kyd-tix
+version: 0.1.0
+source: daml
+parties:
+  - KYD-Operator
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script

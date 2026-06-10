@@ -1,0 +1,41 @@
+-- | Onboarding for the four KYD stakeholder roles. On Solana, "who is allowed
+--   to do what" is enforced by program-derived addresses and signer checks.
+--   In Daml the equivalent is an explicit, signed membership contract created
+--   through a propose / accept handshake, so authority is never ambient.
+module Kyd.Roles where
+
+data RoleType
+  = Venue
+  | Artist
+  | Fan
+  | Lender
+  deriving (Eq, Ord, Show)
+
+-- | The operator invites a party to take on a role.
+template Invitation
+  with
+    operator : Party
+    invitee : Party
+    role : RoleType
+  where
+    signatory operator
+    observer invitee
+
+    choice Invitation_Accept : ContractId Membership
+      controller invitee
+      do create Membership with operator, member = invitee, role
+
+    choice Invitation_Decline : ()
+      controller invitee
+      do pure ()
+
+-- | A counter-signed record that `member` holds `role` on the KYD network.
+template Membership
+  with
+    operator : Party
+    member : Party
+    role : RoleType
+  where
+    signatory operator, member
+    key (operator, member, role) : (Party, Party, RoleType)
+    maintainer key._1

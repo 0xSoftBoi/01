@@ -1,0 +1,400 @@
+-- | Daml Script tests. Run with `daml test` (no ledger required) or load into
+--   `daml start` / Navigator. Each `Script ()` below is an independent scenario.
+module Kyd.Test where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Date (date, Month(..))
+import DA.Time (time)
+
+import Kyd.Cash
+import Kyd.Roles
+import Kyd.Event
+import Kyd.Ticket
+import Kyd.Tix
+
+-- A reusable cast of parties.
+data Cast = Cast
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    alice : Party   -- first fan / seller
+    bob : Party     -- second fan / buyer
+    lender : Party
+    lender2 : Party
+
+setupCast : Script Cast
+setupCast = do
+  operator <- allocateParty "KYD-Operator"
+  venue    <- allocateParty "Venue"
+  artist   <- allocateParty "Artist"
+  alice    <- allocateParty "Alice"
+  bob      <- allocateParty "Bob"
+  lender   <- allocateParty "Lender"
+  lender2  <- allocateParty "Lender2"
+  pure Cast with ..
+
+-- Mint operator cash to a party.
+mint : Cast -> Party -> Decimal -> Script (ContractId Cash)
+mint c owner amount = submit c.operator $ createCmd Cash with
+  operator = c.operator, owner, amount, observers = []
+
+-- Sum a party's cash balance (only notes it owns, not ones merely disclosed
+-- to it, such as escrows it observes).
+cashOf : Party -> Script Decimal
+cashOf p = do
+  notes <- query @Cash p
+  pure (foldl (\acc (_, c) -> if c.owner == p then acc + c.amount else acc) 0.0 notes)
+
+-- A single-tier event: GA at 50 with no demand escalator, a 1.5x resale cap
+-- (so 75 on a face-price purchase) and a 10% artist royalty.
+makeEvent : Cast -> Script (ContractId Event)
+makeEvent c =
+  submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
+    operator = c.operator
+    venue = c.venue
+    artist = c.artist
+    eventId = "SHOW-001"
+    name = "Robert Plant — Live"
+    eventTime = time (date 2026 Jul 4) 20 0 0
+    royaltyBps = 1000
+    tiers = [Tier with tierId = "GA", basePrice = 50.0, demandBps = 0, resaleCapBps = 15000, supply = 100, issued = 0]
+
+-- 1. Onboarding handshake produces a counter-signed membership.
+testOnboarding : Script ()
+testOnboarding = do
+  c <- setupCast
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = c.venue, role = Venue
+  _ <- submit c.venue $ exerciseCmd inv Invitation_Accept
+  memberships <- query @Membership c.venue
+  length memberships === 1
+
+-- 2. Primary sale mints a ticket to the fan and advances the issued-counter.
+testPrimarySale : Script ()
+testPrimarySale = do
+  c <- setupCast
+  ev <- makeEvent c
+  (ev1, _t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
+  Some ev1Data <- queryContractId c.operator ev1
+  sum (map (\t -> t.issued) ev1Data.tiers) === 1
+  aliceTickets <- query @Ticket c.alice
+  length aliceTickets === 1
+
+-- 3. Resale within the cap: royalty to the artist, remainder to the seller,
+--    ownership to the buyer — all atomic.
+testResaleWithRoyalty : Script ()
+testResaleWithRoyalty = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
+
+  -- Buyer is funded with exactly the 70 sale price.
+  cash <- mint c c.bob 70.0
+
+  offer <- submit c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 70.0)
+  t2 <- submit c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = cash)
+
+  -- 10% of 70 = 7 to the artist, 63 to the seller, ticket now owned by Bob.
+  artistBal <- cashOf c.artist
+  aliceBal  <- cashOf c.alice
+  bobBal    <- cashOf c.bob
+  artistBal === 7.0
+  aliceBal  === 63.0
+  bobBal    === 0.0
+
+  Some t2Data <- queryContractId c.operator t2
+  t2Data.owner === c.bob
+
+-- 4. The anti-scalping cap is enforced: an over-cap offer is rejected.
+testResaleCapEnforced : Script ()
+testResaleCapEnforced = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
+  -- Cap is 75; offering at 100 must fail.
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 100.0)
+
+-- 5. A redeemed (checked-in) ticket can no longer be resold.
+testRedeemedCannotResell : Script ()
+testRedeemedCannotResell = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
+  t1r <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
+  submitMustFail c.alice $ exerciseCmd t1r (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
+
+-- An offering raising 1,000 at a 1.10x factor rate, 50% revenue share,
+-- maturity 1 Aug 2026 and 10bps/day late interest, open to both lenders.
+makeOffering : Cast -> Script (ContractId FinancingOffering)
+makeOffering c =
+  submitMulti [c.operator, c.venue] [] $ createCmd FinancingOffering with
+    operator = c.operator
+    venue = c.venue
+    eventId = "SHOW-001"
+    target = 1000.0
+    factorRateBps = 11000
+    revenueShareBps = 5000
+    dueDate = time (date 2026 Aug 1) 0 0 0
+    lateInterestBpsPerDay = 10
+    invited = [c.lender, c.lender2]
+    commitments = []
+
+-- A fully subscribed and activated syndication: lender commits 600 and
+-- lender2 400, leaving the venue with the 1,000 principal (two notes) and a
+-- loan register of [lender2 owed 440, lender owed 660].
+setupLoan : Cast -> Script (ContractId SyndicatedLoan, [ContractId Cash])
+setupLoan c = do
+  _ <- makeEvent c
+  off <- makeOffering c
+  n600 <- mint c c.lender 600.0
+  off2 <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n600)
+  n400 <- mint c c.lender2 400.0
+  off3 <- submit c.lender2 $ exerciseCmd off2 (Offering_Commit with lender = c.lender2, cashCid = n400)
+  submit c.venue $ exerciseCmd off3 Offering_Activate
+
+-- 6. TIX end-to-end: two lenders syndicate a 1,000 raise at 1.10x; repayment
+--    flows through revenue-share settlement, a direct pro-rata distribution,
+--    late-interest accrual past maturity, and a final payoff.
+testSyndicatedFinancing : Script ()
+testSyndicatedFinancing = do
+  c <- setupCast
+  _ <- makeEvent c
+  off <- makeOffering c
+
+  -- Lender 1 commits 600 (escrowed with the operator).
+  n600 <- mint c c.lender 600.0
+  off2 <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n600)
+
+  -- Guards: uninvited party cannot commit; a lender cannot commit twice;
+  -- the venue cannot activate an undersubscribed offering.
+  nAlice <- mint c c.alice 100.0
+  submitMustFail c.alice $ exerciseCmd off2 (Offering_Commit with lender = c.alice, cashCid = nAlice)
+  n50 <- mint c c.lender 50.0
+  submitMustFail c.lender $ exerciseCmd off2 (Offering_Commit with lender = c.lender, cashCid = n50)
+  submitMustFail c.venue $ exerciseCmd off2 Offering_Activate
+
+  -- Lender 2 cannot over-commit past the target; splits its note to fit.
+  n500 <- mint c c.lender2 500.0
+  submitMustFail c.lender2 $ exerciseCmd off2 (Offering_Commit with lender = c.lender2, cashCid = n500)
+  (n400, _n100) <- submit c.lender2 $ exerciseCmd n500 (Cash_Split with splitAmount = 100.0)
+  off3 <- submit c.lender2 $ exerciseCmd off2 (Offering_Commit with lender = c.lender2, cashCid = n400)
+
+  -- Fully subscribed: activation pays the venue 1,000 and books the loan with
+  -- entitlements of 1.10x each: lender2 owed 440, lender owed 660.
+  (loan, [p400, p600]) <- submit c.venue $ exerciseCmd off3 Offering_Activate
+  venueBal0 <- cashOf c.venue
+  venueBal0 === 1000.0
+  Some loanData <- queryContractId c.operator loan
+  loanData.tranches === [Tranche c.lender2 440.0, Tranche c.lender 660.0]
+
+  -- Late interest cannot accrue before maturity.
+  submitMustFail c.operator $ exerciseCmd loan Loan_AccrueLateInterest
+
+  -- A 200 ticket sale settles through the loan: 50% (100) is carved out for
+  -- the syndicate pro-rata (lender 60, lender2 40); the venue keeps 100.
+  rev <- mint c c.venue 200.0
+  (Some loan2, Some kept100) <- submit c.venue $ exerciseCmd loan (Loan_SettleRevenue with revenueCid = rev)
+
+  -- Direct paydown of 500, split pro-rata (lender 300, lender2 200).
+  n500v <- submit c.venue $ exerciseCmd p400 (Cash_Merge with otherCid = kept100)
+  Some loan3 <- submit c.venue $ exerciseCmd loan2 (Loan_Distribute with cashCid = n500v)
+  Some loan3Data <- queryContractId c.operator loan3
+  loan3Data.tranches === [Tranche c.lender2 200.0, Tranche c.lender 300.0]
+
+  -- Ten full days past the 1 Aug maturity at 10bps/day: outstanding grows 1%.
+  setTime (time (date 2026 Aug 11) 0 0 0)
+  loan4 <- submit c.operator $ exerciseCmd loan3 Loan_AccrueLateInterest
+  Some loan4Data <- queryContractId c.operator loan4
+  loan4Data.tranches === [Tranche c.lender2 202.0, Tranche c.lender 303.0]
+  -- Accruing twice on the same day is rejected.
+  submitMustFail c.operator $ exerciseCmd loan4 Loan_AccrueLateInterest
+
+  -- Final payoff of 505 retires the loan.
+  (kept95, pay505) <- submit c.venue $ exerciseCmd p600 (Cash_Split with splitAmount = 505.0)
+  None <- submit c.venue $ exerciseCmd loan4 (Loan_Distribute with cashCid = pay505)
+
+  -- Lender 1: 60 + 300 + 303 = 663; lender 2: 40 + 200 + 202 = 442 (a 10%
+  -- yield plus late interest); venue keeps 95 of the cash it handled.
+  lenderBal  <- cashOf c.lender
+  lender2Bal <- cashOf c.lender2
+  venueBal   <- cashOf c.venue
+  lenderBal  === 713.0  -- 663 via the waterfall + the unused 50 note
+  lender2Bal === 542.0  -- 442 via the waterfall + the unused 100 split
+  venueBal   === 95.0
+  openLoans <- query @SyndicatedLoan c.venue
+  length openLoans === 0
+
+-- 7. A lender can withdraw a commitment, and cancelling an offering refunds
+--    every escrowed commitment in full.
+testOfferingCancelAndUncommit : Script ()
+testOfferingCancelAndUncommit = do
+  c <- setupCast
+  off <- makeOffering c
+
+  n600 <- mint c c.lender 600.0
+  off2 <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n600)
+  escrowedBal <- cashOf c.lender
+  escrowedBal === 0.0
+
+  -- Withdraw: the escrow comes straight back.
+  off3 <- submit c.lender $ exerciseCmd off2 (Offering_Uncommit with lender = c.lender)
+  refundedBal <- cashOf c.lender
+  refundedBal === 600.0
+
+  -- Re-commit, then the venue cancels the raise: refunded again.
+  [(n600b, _)] <- query @Cash c.lender
+  off4 <- submit c.lender $ exerciseCmd off3 (Offering_Commit with lender = c.lender, cashCid = n600b)
+  submit c.venue $ exerciseCmd off4 Offering_Cancel
+  finalBal <- cashOf c.lender
+  finalBal === 600.0
+  offerings <- query @FinancingOffering c.venue
+  length offerings === 0
+
+-- 8. Paid primary sale: a fan's purchase order fills atomically — payment to
+--    the venue, the lenders' revenue share carved out through the active loan,
+--    and the ticket minted, all in one transaction.
+testPaidPrimarySaleRoutesRevenue : Script ()
+testPaidPrimarySaleRoutesRevenue = do
+  c <- setupCast
+  _ <- setupLoan c
+
+  -- An order that underpays the 50 face price cannot be filled.
+  n40 <- mint c c.alice 40.0
+  badOrder <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n40
+  submitMustFail c.operator $ exerciseCmd badOrder PurchaseOrder_Fill
+
+  -- Exact face price fills: 50 paid, 50% share (25) routed pro-rata over the
+  -- register (440/660): lender2 gets 10, lender gets 15; the venue keeps 25.
+  n50 <- mint c c.alice 50.0
+  order <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n50
+  (_, ticketCid) <- submit c.operator $ exerciseCmd order PurchaseOrder_Fill
+
+  Some t <- queryContractId c.alice ticketCid
+  t.owner === c.alice
+  lender2Bal <- cashOf c.lender2
+  lenderBal  <- cashOf c.lender
+  venueBal   <- cashOf c.venue
+  lender2Bal === 10.0
+  lenderBal  === 15.0
+  venueBal   === 1025.0   -- 1,000 principal + the 25 retained from the sale
+  [(_, loanData)] <- query @SyndicatedLoan c.venue
+  loanData.tranches === [Tranche c.lender2 430.0, Tranche c.lender 645.0]
+
+-- 9. Secondary market: a lender sells part of its tranche to an onboarded
+--    buyer at a discount; payment and register update are one atomic DvP, and
+--    the buyer participates pro-rata in subsequent distributions.
+testTrancheSecondaryTrading : Script ()
+testTrancheSecondaryTrading = do
+  c <- setupCast
+  (loan, [p400, p600]) <- setupLoan c
+
+  -- Bob onboards as a lender (the KYC gate for the secondary market).
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = c.bob, role = Lender
+  _ <- submit c.bob $ exerciseCmd inv Invitation_Accept
+
+  -- A lender cannot list more than its outstanding claim.
+  submitMustFail c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.bob, faceAmount = 700.0, price = 600.0)
+
+  -- A non-onboarded buyer is rejected at the KYC gate.
+  offerA <- submit c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.alice, faceAmount = 100.0, price = 90.0)
+  nAlice <- mint c c.alice 90.0
+  submitMultiMustFail [c.alice, c.operator] [] $ exerciseCmd offerA (TrancheOffer_Accept with cashCid = nAlice)
+
+  -- Lender sells 300 of face to Bob for 270 (a 10% discount).
+  offer <- submit c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.bob, faceAmount = 300.0, price = 270.0)
+  n270 <- mint c c.bob 270.0
+  loan2 <- submitMulti [c.bob, c.operator] [] $ exerciseCmd offer (TrancheOffer_Accept with cashCid = n270)
+
+  Some loan2Data <- queryContractId c.operator loan2
+  loan2Data.tranches === [Tranche c.lender2 440.0, Tranche c.lender 360.0, Tranche c.bob 300.0]
+  sellerBal <- cashOf c.lender
+  sellerBal === 270.0
+
+  -- A 550 distribution over the new register (440/360/300 of 1,100):
+  -- lender2 220, lender 180, Bob 150.
+  n1000 <- submit c.venue $ exerciseCmd p600 (Cash_Merge with otherCid = p400)
+  (_kept, pay550) <- submit c.venue $ exerciseCmd n1000 (Cash_Split with splitAmount = 550.0)
+  Some _loan3 <- submit c.venue $ exerciseCmd loan2 (Loan_Distribute with cashCid = pay550)
+
+  lender2Bal <- cashOf c.lender2
+  sellerBal2 <- cashOf c.lender
+  bobBal     <- cashOf c.bob
+  lender2Bal === 220.0
+  sellerBal2 === 450.0   -- 270 sale proceeds + 180 from the distribution
+  bobBal     === 150.0
+
+-- A fan buys one ticket of a tier through the operator's sales engine.
+buy : Cast -> Party -> Text -> Text -> Decimal -> Script (ContractId Ticket)
+buy c fan eventId tierId price = do
+  n <- mint c fan price
+  order <- submit fan $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan, eventId, tierId, cashCid = n
+  (_, ticketCid) <- submit c.operator $ exerciseCmd order PurchaseOrder_Fill
+  pure ticketCid
+
+-- A purchase attempt that must be rejected at fill time.
+buyMustFail : Cast -> Party -> Text -> Text -> Decimal -> Script ()
+buyMustFail c fan eventId tierId price = do
+  n <- mint c fan price
+  order <- submit fan $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan, eventId, tierId, cashCid = n
+  submitMustFail c.operator $ exerciseCmd order PurchaseOrder_Fill
+
+-- 10. Tiered seating + dynamic pricing: GA's price climbs 2% of base per
+--     ticket sold while VIP stays flat; resale caps anchor to the price each
+--     fan actually paid; tiers sell out independently; venue/artist can
+--     reprice a tier manually.
+testTieredDynamicPricing : Script ()
+testTieredDynamicPricing = do
+  c <- setupCast
+  _ <- submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
+    operator = c.operator
+    venue = c.venue
+    artist = c.artist
+    eventId = "SHOW-002"
+    name = "Charli XCX — Live"
+    eventTime = time (date 2026 Sep 1) 21 0 0
+    royaltyBps = 1000
+    tiers =
+      [ Tier with tierId = "GA",  basePrice = 50.0,  demandBps = 200, resaleCapBps = 15000, supply = 3, issued = 0
+      , Tier with tierId = "VIP", basePrice = 100.0, demandBps = 0,   resaleCapBps = 12000, supply = 2, issued = 0
+      ]
+
+  -- GA demand curve: 50 -> 51 -> 52; paying yesterday's price is rejected.
+  _t1 <- buy c c.alice "SHOW-002" "GA" 50.0
+  buyMustFail c c.bob "SHOW-002" "GA" 50.0
+  t2 <- buy c c.bob "SHOW-002" "GA" 51.0
+  _t3 <- buy c c.alice "SHOW-002" "GA" 52.0
+  -- GA is sold out (supply 3), whatever the price offered.
+  buyMustFail c c.bob "SHOW-002" "GA" 53.0
+
+  -- The resale cap anchors to the price Bob actually paid: 51 x 1.5 = 76.5.
+  Some t2Data <- queryContractId c.bob t2
+  t2Data.facePrice === 51.0
+  t2Data.maxResalePrice === 76.5
+  submitMustFail c.bob $ exerciseCmd t2 (Ticket_Offer with buyer = c.alice, salePrice = 77.0)
+  resale <- submit c.bob $ exerciseCmd t2 (Ticket_Offer with buyer = c.alice, salePrice = 76.5)
+  _ <- submit c.bob $ exerciseCmd resale ResaleOffer_Withdraw
+
+  -- VIP is untouched by GA demand: still 100. Then the artist reprices it to
+  -- 80 and the next sale clears at the new base.
+  _t4 <- buy c c.bob "SHOW-002" "VIP" 100.0
+  _ <- submit c.artist $ exerciseByKeyCmd @Event (c.operator, "SHOW-002")
+    (Event_SetTierBasePrice with repricer = c.artist, tierId = "VIP", newBasePrice = 80.0)
+  _t5 <- buy c c.alice "SHOW-002" "VIP" 80.0
+
+  -- A random party cannot reprice.
+  submitMustFail c.bob $ exerciseByKeyCmd @Event (c.operator, "SHOW-002")
+    (Event_SetTierBasePrice with repricer = c.bob, tierId = "VIP", newBasePrice = 1.0)
+
+  -- Venue collected every primary sale: 50 + 51 + 52 + 100 + 80 = 333.
+  venueBal <- cashOf c.venue
+  venueBal === 333.0
