@@ -1,0 +1,152 @@
+-- | Daml Script tests. Run with `daml test` (no ledger required) or load into
+--   `daml start` / Navigator. Each `Script ()` below is an independent scenario.
+module Kyd.Test where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Date (date, Month(..))
+import DA.Time (time)
+
+import Kyd.Cash
+import Kyd.Roles
+import Kyd.Event
+import Kyd.Ticket
+import Kyd.Tix
+
+-- A reusable cast of parties.
+data Cast = Cast
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    alice : Party   -- first fan / seller
+    bob : Party     -- second fan / buyer
+    lender : Party
+
+setupCast : Script Cast
+setupCast = do
+  operator <- allocateParty "KYD-Operator"
+  venue    <- allocateParty "Venue"
+  artist   <- allocateParty "Artist"
+  alice    <- allocateParty "Alice"
+  bob      <- allocateParty "Bob"
+  lender   <- allocateParty "Lender"
+  pure Cast with ..
+
+-- Sum a party's cash balance.
+cashOf : Party -> Script Decimal
+cashOf p = do
+  notes <- query @Cash p
+  pure (foldl (\acc (_, c) -> acc + c.amount) 0.0 notes)
+
+-- An event with a 50 face price, a 75 resale cap and a 10% artist royalty.
+makeEvent : Cast -> Script (ContractId Event)
+makeEvent c =
+  submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
+    operator = c.operator
+    venue = c.venue
+    artist = c.artist
+    eventId = "SHOW-001"
+    name = "Robert Plant — Live"
+    eventTime = time (date 2026 Jul 4) 20 0 0
+    facePrice = 50.0
+    maxResalePrice = 75.0
+    royaltyBps = 1000
+    totalSupply = 100
+    issued = 0
+
+-- 1. Onboarding handshake produces a counter-signed membership.
+testOnboarding : Script ()
+testOnboarding = do
+  c <- setupCast
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = c.venue, role = Venue
+  _ <- submit c.venue $ exerciseCmd inv Invitation_Accept
+  memberships <- query @Membership c.venue
+  length memberships === 1
+
+-- 2. Primary sale mints a ticket to the fan and advances the issued-counter.
+testPrimarySale : Script ()
+testPrimarySale = do
+  c <- setupCast
+  ev <- makeEvent c
+  (ev1, _t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  Some ev1Data <- queryContractId c.operator ev1
+  ev1Data.issued === 1
+  aliceTickets <- query @Ticket c.alice
+  length aliceTickets === 1
+
+-- 3. Resale within the cap: royalty to the artist, remainder to the seller,
+--    ownership to the buyer — all atomic.
+testResaleWithRoyalty : Script ()
+testResaleWithRoyalty = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+
+  -- Buyer is funded with exactly the 70 sale price.
+  cash <- submit c.operator $ createCmd Cash with
+    operator = c.operator, owner = c.bob, amount = 70.0
+
+  offer <- submit c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 70.0)
+  t2 <- submit c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = cash)
+
+  -- 10% of 70 = 7 to the artist, 63 to the seller, ticket now owned by Bob.
+  artistBal <- cashOf c.artist
+  aliceBal  <- cashOf c.alice
+  bobBal    <- cashOf c.bob
+  artistBal === 7.0
+  aliceBal  === 63.0
+  bobBal    === 0.0
+
+  Some t2Data <- queryContractId c.operator t2
+  t2Data.owner === c.bob
+
+-- 4. The anti-scalping cap is enforced: an over-cap offer is rejected.
+testResaleCapEnforced : Script ()
+testResaleCapEnforced = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  -- Cap is 75; offering at 100 must fail.
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 100.0)
+
+-- 5. A redeemed (checked-in) ticket can no longer be resold.
+testRedeemedCannotResell : Script ()
+testRedeemedCannotResell = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  t1r <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
+  submitMustFail c.alice $ exerciseCmd t1r (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
+
+-- 6. TIX: a venue raises 1,000 against the event and repays the lender in full.
+testTixFinancing : Script ()
+testTixFinancing = do
+  c <- setupCast
+  _ <- makeEvent c
+
+  lenderCash <- submit c.operator $ createCmd Cash with
+    operator = c.operator, owner = c.lender, amount = 1000.0
+
+  req <- submitMulti [c.operator, c.venue] [] $ createCmd FinancingRequest with
+    operator = c.operator
+    venue = c.venue
+    lender = c.lender
+    eventId = "SHOW-001"
+    principal = 1000.0
+    repayment = 1000.0
+    dueDate = time (date 2026 Aug 1) 0 0 0
+
+  loan <- submit c.lender $ exerciseCmd req (Financing_Fund with cashCid = lenderCash)
+
+  -- Venue now holds the 1,000 principal; repay it back to the lender.
+  [(venueCashCid, _)] <- query @Cash c.venue
+  None <- submit c.venue $ exerciseCmd loan (Loan_Repay with cashCid = venueCashCid)
+
+  lenderBal <- cashOf c.lender
+  venueBal  <- cashOf c.venue
+  lenderBal === 1000.0
+  venueBal  === 0.0
+  openLoans <- query @Loan c.lender
+  length openLoans === 0

@@ -1,0 +1,78 @@
+-- | The TIX financing layer. A venue raises upfront capital against the future
+--   revenue of a specific event; a lender funds it and is repaid (with interest)
+--   as ticket sales settle. This is the RWA / private-credit use case that KYD's
+--   TICKS standard unlocks — here expressed as a pair of signed contracts whose
+--   cash movements are atomic and auditable by exactly the three counterparties.
+module Kyd.Tix where
+
+import Kyd.Cash
+
+-- | A venue's targeted request for upfront capital from one lender.
+template FinancingRequest
+  with
+    operator : Party
+    venue : Party
+    lender : Party
+    eventId : Text
+    principal : Decimal   -- capital the venue wants now
+    repayment : Decimal   -- total to repay (principal + interest)
+    dueDate : Time
+  where
+    signatory operator, venue
+    observer lender
+    ensure principal > 0.0 && repayment >= principal
+
+    -- | Lender funds the principal to the venue and a Loan is booked.
+    choice Financing_Fund : ContractId Loan
+      with cashCid : ContractId Cash
+      controller lender
+      do
+        cash <- fetch cashCid
+        assertMsg "lender must fund from its own cash" (cash.owner == lender)
+        assertMsg "must fund exactly the principal" (cash.amount == principal)
+        _ <- exercise cashCid Cash_Transfer with newOwner = venue
+        create Loan with
+          operator
+          venue
+          lender
+          eventId
+          repayment
+          outstanding = repayment
+          dueDate
+
+    choice Financing_Cancel : ()
+      controller venue
+      do pure ()
+
+-- | An outstanding loan against an event's ticket revenue. Supports partial
+--   repayment; archived once fully repaid.
+template Loan
+  with
+    operator : Party
+    venue : Party
+    lender : Party
+    eventId : Text
+    repayment : Decimal
+    outstanding : Decimal
+    dueDate : Time
+  where
+    signatory operator, venue, lender
+    ensure outstanding >= 0.0
+
+    -- | Venue routes ticket revenue back to the lender. Returns the updated loan,
+    --   or None when the balance reaches zero.
+    choice Loan_Repay : Optional (ContractId Loan)
+      with cashCid : ContractId Cash
+      controller venue
+      do
+        cash <- fetch cashCid
+        assertMsg "repay from the venue's own cash" (cash.owner == venue)
+        assertMsg "cannot repay more than the outstanding balance"
+          (cash.amount <= outstanding)
+        _ <- exercise cashCid Cash_Transfer with newOwner = lender
+        let remaining = outstanding - cash.amount
+        if remaining == 0.0
+          then pure None
+          else do
+            cid <- create this with outstanding = remaining
+            pure (Some cid)

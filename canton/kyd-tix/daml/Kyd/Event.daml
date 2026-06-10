@@ -1,0 +1,49 @@
+-- | An event is the primary-issuance authority for its tickets. It carries the
+--   anti-scalping policy (resale cap + royalty) that every minted ticket inherits,
+--   and an authoritative issued-counter so the venue can never oversell.
+module Kyd.Event where
+
+import Kyd.Ticket
+
+template Event
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    eventId : Text
+    name : Text
+    eventTime : Time
+    facePrice : Decimal
+    maxResalePrice : Decimal
+    royaltyBps : Int
+    totalSupply : Int
+    issued : Int
+  where
+    signatory operator, venue, artist
+    ensure totalSupply > 0 && issued >= 0 && issued <= totalSupply
+        && royaltyBps >= 0 && royaltyBps < 10000
+        && facePrice >= 0.0 && maxResalePrice >= facePrice
+
+    key (operator, eventId) : (Party, Text)
+    maintainer key._1
+
+    -- | Primary sale: mint the next ticket to a fan. Consuming + recreate keeps
+    --   the issued-count authoritative and prevents oversell under concurrency.
+    choice Event_Issue : (ContractId Event, ContractId Ticket)
+      with fan : Party
+      controller venue
+      do
+        assertMsg "event is sold out" (issued < totalSupply)
+        ticketCid <- create Ticket with
+          operator
+          venue
+          artist
+          owner = fan
+          eventId
+          serial = issued + 1
+          facePrice
+          maxResalePrice
+          royaltyBps
+          redeemed = False
+        eventCid <- create this with issued = issued + 1
+        pure (eventCid, ticketCid)

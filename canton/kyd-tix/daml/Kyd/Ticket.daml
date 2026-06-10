@@ -1,0 +1,90 @@
+-- | The TICKS primitive: a ticket modelled as a real-world asset rather than a
+--   collectible NFT. Resale is gated by an anti-scalping price cap and pays a
+--   royalty back to the artist, settled atomically against cash (delivery-vs-
+--   payment). Privacy falls out of the signatory/observer split: a fan only ever
+--   sees their own tickets, never another buyer's.
+module Kyd.Ticket where
+
+import Kyd.Cash
+
+template Ticket
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    owner : Party          -- current holder (the fan)
+    eventId : Text
+    serial : Int
+    facePrice : Decimal    -- primary-sale price
+    maxResalePrice : Decimal
+    royaltyBps : Int       -- artist royalty on resale, in basis points
+    redeemed : Bool
+  where
+    signatory operator, venue
+    observer owner, artist
+    ensure royaltyBps >= 0 && royaltyBps < 10000 && maxResalePrice >= 0.0
+
+    key (operator, eventId, serial) : (Party, Text, Int)
+    maintainer key._1
+
+    -- | Door scan. Once redeemed a ticket can no longer be resold.
+    choice Ticket_CheckIn : ContractId Ticket
+      controller venue
+      do
+        assertMsg "ticket already redeemed" (not redeemed)
+        create this with redeemed = True
+
+    -- | Owner lists the ticket for resale to a named buyer. Consuming, so the
+    --   ticket is locked-by-archiving and cannot be offered to two buyers at once.
+    choice Ticket_Offer : ContractId ResaleOffer
+      with
+        buyer : Party
+        salePrice : Decimal
+      controller owner
+      do
+        assertMsg "redeemed tickets cannot be resold" (not redeemed)
+        assertMsg "resale price exceeds the anti-scalping cap"
+          (salePrice <= maxResalePrice)
+        assertMsg "buyer must differ from the current owner" (buyer /= owner)
+        create ResaleOffer with ticket = this, buyer, salePrice
+
+-- | A pending resale. Holds the locked ticket until the buyer settles or it is
+--   withdrawn / rejected, in which case the ticket is handed back to the seller.
+template ResaleOffer
+  with
+    ticket : Ticket
+    buyer : Party
+    salePrice : Decimal
+  where
+    signatory ticket.operator, ticket.venue, ticket.owner
+    observer buyer, ticket.artist
+
+    -- | Buyer pays in full; royalty routes to the artist, remainder to the
+    --   seller, and ownership transfers — all in one atomic transaction.
+    choice ResaleOffer_Accept : ContractId Ticket
+      with cashCid : ContractId Cash
+      controller buyer
+      do
+        cash <- fetch cashCid
+        assertMsg "payment must come from the buyer" (cash.owner == buyer)
+        assertMsg "payment must equal the agreed sale price"
+          (cash.amount == salePrice)
+        let royalty = salePrice * intToDecimal ticket.royaltyBps / 10000.0
+        if royalty > 0.0
+          then do
+            (sellerCash, royaltyCash) <- exercise cashCid Cash_Split with splitAmount = royalty
+            _ <- exercise royaltyCash Cash_Transfer with newOwner = ticket.artist
+            _ <- exercise sellerCash Cash_Transfer with newOwner = ticket.owner
+            pure ()
+          else do
+            _ <- exercise cashCid Cash_Transfer with newOwner = ticket.owner
+            pure ()
+        create ticket with owner = buyer
+
+    choice ResaleOffer_Reject : ContractId Ticket
+      controller buyer
+      do create ticket
+
+    choice ResaleOffer_Withdraw : ContractId Ticket
+      controller ticket.owner
+      do create ticket
