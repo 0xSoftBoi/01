@@ -9,12 +9,15 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 12 test scenarios pass on Daml SDK **2.10.4**.
+It builds and all 12 test scenarios pass on Daml SDK **2.10.4**. Operator
+automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
+live in [`integration/`](integration/).
 
 ```
 daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
 daml test       # runs the Daml Script suite in Kyd/Test.daml
 daml start       # boots a sandbox ledger + Navigator to click through it
+integration/run-local.sh   # sandbox + JSON API + operator triggers
 ```
 
 ---
@@ -97,6 +100,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | `Kyd.Event` | `Event` (tiered), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
 | `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, tranche secondary market |
+| `Kyd.Triggers` | `autoFillOrders`, `accrueLateInterest` | Operator automation (off-ledger Daml Triggers) — see `integration/` |
 
 ### Lifecycle
 
@@ -222,7 +226,17 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 
 ---
 
+## Automation & integration (`integration/`)
+
+- **Daml Triggers** (`Kyd.Triggers`): `autoFillOrders` settles fan purchase
+  orders automatically; `accrueLateInterest` runs daily accrual on overdue
+  loans. Both compile into the DAR and are listed by the trigger runner.
+- **JSON API + daml2js**: `integration/codegen.sh` generates typed TS bindings
+  (`@kyd/kyd-tix-0.1.0`) for the web app; `integration/client/` shows a fan
+  buying a ticket over HTTP; `integration/run-local.sh` boots the full stack.
+
 ## Not in scope (next steps)
 
-- Daml Triggers to auto-fill purchase orders and run late-interest accrual.
-- A `daml2js` codegen front-end + JSON API for the existing KYD web app.
+- A production Canton topology (multi-participant, per-stakeholder nodes) and
+  JWT auth wiring in front of the JSON API.
+- Tiered seating maps / seat-level inventory (today tiers are fungible pools).

@@ -1,0 +1,50 @@
+-- | Off-ledger automation, expressed as Daml Triggers. A trigger is a long-
+--   running process that reacts to ledger events under a single party's
+--   authority — here the KYD operator — turning the manual operator choices
+--   ('PurchaseOrder_Fill', 'Loan_AccrueLateInterest') into hands-off services.
+--
+--   Run against a ledger with, e.g.:
+--     daml trigger --dar .daml/dist/kyd-tix-0.1.0.dar \
+--       --trigger-name Kyd.Triggers:autoFillOrders \
+--       --ledger-host localhost --ledger-port 6865 --ledger-party KYD-Operator
+module Kyd.Triggers where
+
+import DA.Action (when)
+import DA.Foldable (forA_)
+import DA.Time (hours)
+import Daml.Trigger
+
+import Kyd.Event
+import Kyd.Tix
+
+-- | The sales engine. Whenever a fan submits a 'PurchaseOrder', fill it: the
+--   fill is atomic (payment → venue, loan revenue-share carved out, ticket
+--   minted) and self-guarding, so an order priced below the tier's current
+--   price simply fails ledger-side and is left for the operator to reject.
+autoFillOrders : Trigger ()
+autoFillOrders = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates [registeredTemplate @PurchaseOrder]
+  heartbeat = None
+  rule = \operator -> do
+    orders <- query @PurchaseOrder
+    forA_ orders $ \(cid, order) ->
+      when (order.operator == operator) $
+        dedupExercise cid PurchaseOrder_Fill
+
+-- | The agent's accrual job. On a daily heartbeat, attempt to accrue late
+--   interest on every syndicated loan. The choice self-guards on elapsed time,
+--   so attempts before a full late day has passed are no-ops ledger-side; once
+--   a day rolls over past maturity, exactly one accrual is applied per loan.
+accrueLateInterest : Trigger ()
+accrueLateInterest = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates [registeredTemplate @SyndicatedLoan]
+  heartbeat = Some (hours 24)
+  rule = \operator -> do
+    loans <- query @SyndicatedLoan
+    forA_ loans $ \(cid, loan) ->
+      when (loan.operator == operator) $
+        dedupExercise cid Loan_AccrueLateInterest
