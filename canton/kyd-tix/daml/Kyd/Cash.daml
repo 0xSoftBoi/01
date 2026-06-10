@@ -10,16 +10,24 @@ template Cash
     operator : Party
     owner : Party
     amount : Decimal
+    observers : [Party]   -- disclosure list, e.g. escrow counterparties
   where
     signatory operator
-    observer owner
+    observer (owner :: observers)
     ensure amount > 0.0
 
-    -- | Hand the full balance to a new holder.
+    -- | Hand the full balance to a new holder. Disclosure persists across the
+    --   transfer (escrow flows rely on this); the new owner can reset it.
     choice Cash_Transfer : ContractId Cash
       with newOwner : Party
       controller owner
       do create this with owner = newOwner
+
+    -- | Owner sets who else may see this note (pass [] to clear disclosure).
+    choice Cash_Disclose : ContractId Cash
+      with parties : [Party]
+      controller owner
+      do create this with observers = parties
 
     -- | Split off `splitAmount`; returns (remainder kept by owner, the slice).
     choice Cash_Split : (ContractId Cash, ContractId Cash)

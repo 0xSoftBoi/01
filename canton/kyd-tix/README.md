@@ -9,7 +9,7 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 7 test scenarios pass on Daml SDK **2.10.4**.
+It builds and all 8 test scenarios pass on Daml SDK **2.10.4**.
 
 ```
 daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
@@ -40,11 +40,32 @@ Core operational mechanics carried over: primary sale, **resale price caps** and
 **royalties**, retained fan data / resale controls for the artist, and door
 redemption.
 
+### How the financing leg actually works (research behind `Kyd.Tix`)
+
+- **TIX's mechanic is revenue-routed repayment**: "ticket revenue automatically
+  enforces repayment of financing", raised from *multiple liquidity providers
+  without exclusivity deals". Track record: 300k+ tickets, $10M+ sales, $2M+
+  venue financing, zero defaults.
+- **Live-event capital is revenue-based financing (RBF), not a compound-interest
+  loan**: a one-time **factor rate** (typically 1.10x–1.50x) fixes the total
+  repayment up front; a **revenue share** of each sale (commonly 2–15% of gross;
+  much higher when secured against a single show) pays it down until the cap is
+  hit. Interest only enters as a *late penalty* past maturity.
+- **Syndication on DAML is production-proven**: Versana — founded by BofA, Citi,
+  Credit Suisse and J.P. Morgan — runs syndicated loans on Daml/Canton (1,500+
+  loans, ~$900B). Distributions follow a single **pro-rata waterfall**: every
+  lender is paid simultaneously, proportional to its share.
+
 Sources:
 - [KYD Labs TICKS Protocol — Solana Compass](https://solanacompass.com/learn/breakpoint-25/nft-ticketing-doesnt-work-and-were-selling-to-ticketmaster-kyd-labs)
 - [TIX emerges from stealth — Cointelegraph](https://cointelegraph.com/news/tix-defi-onchain-settlement-live-event-ticketing)
 - [KYD Labs launches TIX — The Defiant](https://thedefiant.io/news/nfts-and-web3/solana-ticketing-platform-kyd-labs-launches-tix)
 - [Founders launch TIX — TicketNews](https://www.ticketnews.com/2025/12/founders-kyd-labs-launch-tix/)
+- [KYD Labs launches decentralised financing network — Music Ally](https://musically.com/2025/12/12/kyd-labs-launches-decentralised-financing-network-for-live-events/)
+- [TIX Protocol launches Solana-based financing network — Yellow](https://yellow.com/news/tix-protocol-launches-solana-based-financing-network-for-live-events-industry)
+- [Revenue-based financing: terms & mechanics — re:cap](https://www.re-cap.com/financing-instruments/revenue-based-financing)
+- [How RBF repayment works — Crestmont Capital](https://www.crestmontcapital.com/blog/how-revenue-based-financing-repayment-works)
+- [Versana: syndicated loans on Daml/Canton — Ledger Insights](https://www.ledgerinsights.com/syndicated-loans-smart-contracts/)
 
 ---
 
@@ -72,10 +93,10 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | Module | Templates | Solana equivalent |
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
-| `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement) |
+| `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
 | `Kyd.Event` | `Event` | Event/collection program + mint authority |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
-| `Kyd.Tix` | `FinancingRequest`, `Loan` | The TIX financing/settlement program |
+| `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan` | The TIX financing/settlement program |
 
 ### Lifecycle
 
@@ -90,9 +111,28 @@ ResaleOffer.Accept(cash):                                (atomic DvP)
     ticket   -> buyer
 Ticket.Ticket_CheckIn -> redeemed (resale now blocked)   (door scan)
 
-venue: FinancingRequest --Fund(cash)--> Loan             (TIX: capital to venue)
-Loan.Loan_Repay(cash) --> repaid to lender               (TIX: settle from sales)
+venue+operator: FinancingOffering (invited lenders)      (TIX: open the raise)
+Offering_Commit(cash) per lender --> escrow w/ operator  (lock-by-safekeeping)
+  Offering_Uncommit / Offering_Cancel --> refunds        (escape hatches)
+Offering_Activate [fully subscribed]:                    (atomic)
+    principal -> venue
+    SyndicatedLoan booked; tranche_i = commit_i x factor rate
+Loan_SettleRevenue(sale cash):                           (auto-enforced repayment)
+    revenue share --> lenders pro-rata; remainder -> venue
+Loan_Distribute(cash) --> pro-rata waterfall             (direct paydown)
+Loan_AccrueLateInterest [past dueDate]                   (simple interest / late day)
+... archived when every tranche reaches zero
 ```
+
+### TIX worked example (from `testSyndicatedFinancing`)
+
+Target 1,000 at a **1.10x factor rate**, **50% revenue share**, 10bps/day late
+interest. Lender A commits 600, lender B 400 (escrowed; refundable until
+activation). On activation the venue receives 1,000 and owes A 660 / B 440.
+A 200 ticket sale settles through the loan: 100 is carved out pro-rata
+(A 60 / B 40) before the venue touches the rest. A direct 500 paydown splits
+A 300 / B 200. Ten days past maturity, outstanding accrues 1% (A 303 / B 202),
+and a final 505 payment retires the loan — every leg atomic, every split exact.
 
 ### Worked example (from `testResaleWithRoyalty`)
 
@@ -112,14 +152,20 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 3. `testResaleWithRoyalty` — atomic royalty + proceeds + ownership
 4. `testResaleCapEnforced` — anti-scalping cap rejects over-cap offers
 5. `testRedeemedCannotResell` — redeemed tickets are non-transferable
-6. `testTixFinancing` — venue raises capital and repays the lender
+6. `testSyndicatedFinancing` — two-lender raise: escrowed commitments, guards
+   (uninvited / double / over-commit, premature activation), atomic activation,
+   revenue-share settlement, pro-rata distribution, late-interest accrual,
+   full payoff
+7. `testOfferingCancelAndUncommit` — lender withdrawal and venue cancellation
+   both refund escrow in full
 
 ---
 
 ## Not in scope (next steps)
 
-- Interest accrual / late-payment penalties on `Loan` (model supports partial
-  repayment; rate logic is a thin add-on).
-- Pooled / multi-lender financing (today one `FinancingRequest` targets one lender).
+- Wiring `Loan_SettleRevenue` directly into primary-sale flow (today the venue
+  routes sale proceeds through the loan; an operator automation/trigger would
+  make it fully hands-off, matching TIX's "automatic enforcement").
+- Open (non-invited) offerings and secondary trading of tranches between lenders.
 - Tiered seating and dynamic pricing curves on `Event`.
 - A `daml2js` codegen front-end + JSON API for the existing KYD web app.

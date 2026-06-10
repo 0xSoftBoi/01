@@ -1,78 +1,253 @@
--- | The TIX financing layer. A venue raises upfront capital against the future
---   revenue of a specific event; a lender funds it and is repaid (with interest)
---   as ticket sales settle. This is the RWA / private-credit use case that KYD's
---   TICKS standard unlocks — here expressed as a pair of signed contracts whose
---   cash movements are atomic and auditable by exactly the three counterparties.
+-- | The TIX financing layer, modelled the way live-event financing actually
+--   works: as syndicated revenue-based financing (RBF), not a compound-interest
+--   loan. Research notes baked into this design:
+--
+--   * TIX's pitch is that "ticket revenue automatically enforces repayment" and
+--     that venues raise from *multiple* liquidity providers without exclusivity.
+--   * RBF deals fix the total repayment up front via a factor rate (typically
+--     1.10x-1.50x of principal) and pay it down with a share of each sale's
+--     revenue; interest only accrues as a late penalty past maturity.
+--   * Syndicated credit on Daml is production-proven (Versana runs $900B of
+--     syndicated loans on Daml/Canton); distributions follow a single pro-rata
+--     waterfall where every lender is paid simultaneously, proportional to its
+--     outstanding share.
+--
+--   Workflow: the venue opens a 'FinancingOffering' naming the invited lenders;
+--   each lender commits cash, which is locked in operator custody (lock-by-
+--   safekeeping) so commitments cannot be double-spent; once fully subscribed
+--   the venue activates, receiving the principal atomically while a
+--   'SyndicatedLoan' is booked whose tranches carry each lender's entitlement
+--   (commitment x factor rate). Ticket revenue then settles through the loan,
+--   which enforces the revenue-share split before the venue ever touches the
+--   remainder.
 module Kyd.Tix where
+
+import DA.Time (addRelTime, convertRelTimeToMicroseconds, days, subTime)
 
 import Kyd.Cash
 
--- | A venue's targeted request for upfront capital from one lender.
-template FinancingRequest
+-- | One lender's slice of the syndicate: how much it is still owed.
+data Tranche = Tranche
+  with
+    lender : Party
+    outstanding : Decimal
+  deriving (Eq, Show)
+
+-- | A lender's escrowed commitment to an offering.
+data LenderCommitment = LenderCommitment
+  with
+    lender : Party
+    amount : Decimal
+    escrow : ContractId Cash   -- held in operator custody until activate/cancel
+  deriving (Eq, Show)
+
+-- | Sequential pro-rata allocation of a payment across tranches. Each tranche
+--   receives payRemaining * outstanding / remainingOutstanding, which telescopes
+--   to an exact pro-rata split with any rounding dust absorbed by the final
+--   tranche (so the amounts always sum to the payment exactly).
+allocate : Decimal -> [Tranche] -> [(Tranche, Decimal)]
+allocate _ [] = []
+allocate payRemaining [t] = [(t, payRemaining)]
+allocate payRemaining (t :: rest) =
+  let remOut = t.outstanding + sum (map (\x -> x.outstanding) rest)
+      p = payRemaining * t.outstanding / remOut
+  in (t, p) :: allocate (payRemaining - p) rest
+
+-- | Walk an allocation, slicing the payment cash to each lender and reducing
+--   the tranche outstandings. The final positive payment takes whatever note
+--   remains, so the cash is fully disbursed with no dust left behind.
+payLenders : Optional (ContractId Cash) -> [(Tranche, Decimal)] -> Update [Tranche]
+payLenders _ [] = pure []
+payLenders mCash ((t, p) :: rest)
+  | p <= 0.0 = do
+      ts <- payLenders mCash rest
+      pure (t :: ts)
+  | otherwise = case mCash of
+      None -> abort "internal error: ran out of cash mid-distribution"
+      Some cashCid -> do
+        cash <- fetch cashCid
+        let t' = t with outstanding = max 0.0 (t.outstanding - p)
+        if p >= cash.amount
+          then do
+            _ <- exercise cashCid (Cash_Transfer with newOwner = t.lender)
+            ts <- payLenders None rest
+            pure (t' :: ts)
+          else do
+            (kept, slice) <- exercise cashCid (Cash_Split with splitAmount = p)
+            _ <- exercise slice (Cash_Transfer with newOwner = t.lender)
+            ts <- payLenders (Some kept) rest
+            pure (t' :: ts)
+
+-- | A venue's open capital raise against an event, syndicated across a named
+--   set of lenders. Commitments are escrowed with the operator so a committed
+--   note cannot be spent twice; the offering only converts into a loan when
+--   fully subscribed, and cancellation refunds every lender.
+template FinancingOffering
   with
     operator : Party
     venue : Party
-    lender : Party
     eventId : Text
-    principal : Decimal   -- capital the venue wants now
-    repayment : Decimal   -- total to repay (principal + interest)
-    dueDate : Time
+    target : Decimal              -- principal the venue is raising
+    factorRateBps : Int           -- 11000 = lenders are owed 1.10x their commitment
+    revenueShareBps : Int         -- share of each settled sale routed to lenders
+    dueDate : Time                -- maturity; late interest accrues beyond it
+    lateInterestBpsPerDay : Int   -- simple interest per full day past maturity
+    invited : [Party]
+    commitments : [LenderCommitment]
   where
     signatory operator, venue
-    observer lender
-    ensure principal > 0.0 && repayment >= principal
+    observer invited
+    ensure target > 0.0
+        && factorRateBps >= 10000
+        && revenueShareBps > 0 && revenueShareBps <= 10000
+        && lateInterestBpsPerDay >= 0
+        && not (null invited)
+        && sum (map (\c -> c.amount) commitments) <= target
 
-    -- | Lender funds the principal to the venue and a Loan is booked.
-    choice Financing_Fund : ContractId Loan
-      with cashCid : ContractId Cash
+    -- | An invited lender escrows its commitment. Flexible controller: any
+    --   invited lender may exercise, with its own cash and authority.
+    choice Offering_Commit : ContractId FinancingOffering
+      with
+        lender : Party
+        cashCid : ContractId Cash
       controller lender
       do
+        assertMsg "only invited lenders may commit" (lender `elem` invited)
+        assertMsg "lender has already committed"
+          (not (any (\c -> c.lender == lender) commitments))
         cash <- fetch cashCid
-        assertMsg "lender must fund from its own cash" (cash.owner == lender)
-        assertMsg "must fund exactly the principal" (cash.amount == principal)
-        _ <- exercise cashCid Cash_Transfer with newOwner = venue
-        create Loan with
+        assertMsg "commit from the lender's own cash" (cash.owner == lender)
+        let committed = sum (map (\c -> c.amount) commitments)
+        assertMsg "commitment would exceed the remaining allocation"
+          (committed + cash.amount <= target)
+        -- Disclose the note to the offering parties, then lock it in operator
+        -- custody, so venue and lender remain stakeholders of the escrow.
+        disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
+        escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
+        let c = LenderCommitment with lender, amount = cash.amount, escrow
+        create this with commitments = c :: commitments
+
+    -- | A lender withdraws before activation and is refunded from escrow.
+    choice Offering_Uncommit : ContractId FinancingOffering
+      with lender : Party
+      controller lender
+      do
+        let mine   = filter (\c -> c.lender == lender) commitments
+            others = filter (\c -> c.lender /= lender) commitments
+        case mine of
+          [c] -> do
+            refund <- exercise c.escrow (Cash_Transfer with newOwner = lender)
+            _ <- exercise refund (Cash_Disclose with parties = [])
+            create this with commitments = others
+          _ -> abort "no commitment to withdraw"
+
+    -- | Venue cancels the raise; every escrowed commitment is refunded.
+    choice Offering_Cancel : ()
+      controller venue
+      do
+        _ <- forA commitments (\c -> exercise c.escrow (Cash_Transfer with newOwner = c.lender))
+        pure ()
+
+    -- | Once fully subscribed: principal moves to the venue and the loan is
+    --   booked, each tranche owed commitment x factor rate — all atomic.
+    choice Offering_Activate : (ContractId SyndicatedLoan, [ContractId Cash])
+      controller venue
+      do
+        let committed = sum (map (\c -> c.amount) commitments)
+        assertMsg "offering is not fully subscribed" (committed == target)
+        proceeds <- forA commitments $ \c -> do
+          released <- exercise c.escrow (Cash_Transfer with newOwner = venue)
+          exercise released (Cash_Disclose with parties = [])
+        let factor = intToDecimal factorRateBps / 10000.0
+            loanTranches = map (\c -> Tranche c.lender (c.amount * factor)) commitments
+        loan <- create SyndicatedLoan with
           operator
           venue
-          lender
           eventId
-          repayment
-          outstanding = repayment
+          revenueShareBps
           dueDate
+          lateInterestBpsPerDay
+          lastAccrual = dueDate
+          tranches = loanTranches
+        pure (loan, proceeds)
 
-    choice Financing_Cancel : ()
-      controller venue
-      do pure ()
-
--- | An outstanding loan against an event's ticket revenue. Supports partial
---   repayment; archived once fully repaid.
-template Loan
+-- | The syndicate's claim on the venue. Repayment is enforced two ways:
+--   ticket revenue settles through 'Loan_SettleRevenue' (the contract takes the
+--   lenders' share before returning the remainder to the venue), and the venue
+--   can also pay down directly via 'Loan_Distribute'. Both routes use the same
+--   pro-rata waterfall. Past maturity the operator accrues simple late interest
+--   on every tranche.
+template SyndicatedLoan
   with
     operator : Party
     venue : Party
-    lender : Party
     eventId : Text
-    repayment : Decimal
-    outstanding : Decimal
+    revenueShareBps : Int
     dueDate : Time
+    lateInterestBpsPerDay : Int
+    lastAccrual : Time            -- late interest is accrued up to here
+    tranches : [Tranche]
   where
-    signatory operator, venue, lender
-    ensure outstanding >= 0.0
+    signatory operator, venue
+    observer map (\t -> t.lender) tranches
+    ensure not (null tranches)
+        && all (\t -> t.outstanding > 0.0) tranches
+        && revenueShareBps > 0 && revenueShareBps <= 10000
+        && lateInterestBpsPerDay >= 0
 
-    -- | Venue routes ticket revenue back to the lender. Returns the updated loan,
-    --   or None when the balance reaches zero.
-    choice Loan_Repay : Optional (ContractId Loan)
+    -- | Direct paydown: split pro-rata across all tranches simultaneously.
+    --   Archived (returns None) once every lender is made whole.
+    choice Loan_Distribute : Optional (ContractId SyndicatedLoan)
       with cashCid : ContractId Cash
       controller venue
       do
         cash <- fetch cashCid
         assertMsg "repay from the venue's own cash" (cash.owner == venue)
-        assertMsg "cannot repay more than the outstanding balance"
-          (cash.amount <= outstanding)
-        _ <- exercise cashCid Cash_Transfer with newOwner = lender
-        let remaining = outstanding - cash.amount
-        if remaining == 0.0
+        let totalOut = sum (map (\t -> t.outstanding) tranches)
+        assertMsg "cannot repay more than the total outstanding"
+          (cash.amount <= totalOut)
+        newTranches <- payLenders (Some cashCid) (allocate cash.amount tranches)
+        let remaining = filter (\t -> t.outstanding > 0.0) newTranches
+        if null remaining
           then pure None
-          else do
-            cid <- create this with outstanding = remaining
-            pure (Some cid)
+          else Some <$> create this with tranches = remaining
+
+    -- | Settle a ticket sale's gross revenue through the loan: the lenders'
+    --   revenue share (capped at the remaining debt) is carved out and paid
+    --   down the waterfall before the venue receives the remainder.
+    choice Loan_SettleRevenue : (Optional (ContractId SyndicatedLoan), Optional (ContractId Cash))
+      with revenueCid : ContractId Cash
+      controller venue
+      do
+        cash <- fetch revenueCid
+        assertMsg "settle from the venue's own revenue" (cash.owner == venue)
+        let totalOut = sum (map (\t -> t.outstanding) tranches)
+            share = min (cash.amount * intToDecimal revenueShareBps / 10000.0) totalOut
+        (lenderCash, venueRest) <-
+          if share < cash.amount
+            then do
+              (kept, slice) <- exercise revenueCid (Cash_Split with splitAmount = share)
+              pure (slice, Some kept)
+            else pure (revenueCid, None)
+        newTranches <- payLenders (Some lenderCash) (allocate share tranches)
+        let remaining = filter (\t -> t.outstanding > 0.0) newTranches
+        loanOpt <-
+          if null remaining
+            then pure None
+            else Some <$> create this with tranches = remaining
+        pure (loanOpt, venueRest)
+
+    -- | Operator (agent role) accrues simple late interest on every tranche for
+    --   each full day elapsed past maturity since the last accrual.
+    choice Loan_AccrueLateInterest : ContractId SyndicatedLoan
+      controller operator
+      do
+        now <- getTime
+        let lateMicros = convertRelTimeToMicroseconds (subTime now lastAccrual)
+            lateDays = truncate (intToDecimal lateMicros / 86400000000.0)
+        assertMsg "no full late day has elapsed since the last accrual"
+          (lateDays > 0)
+        let rate = intToDecimal (lateInterestBpsPerDay * lateDays) / 10000.0
+        create this with
+          tranches = map (\t -> t with outstanding = t.outstanding + t.outstanding * rate) tranches
+          lastAccrual = addRelTime lastAccrual (days lateDays)
