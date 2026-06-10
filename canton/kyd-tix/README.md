@@ -9,7 +9,7 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 10 test scenarios pass on Daml SDK **2.10.4**.
+It builds and all 11 test scenarios pass on Daml SDK **2.10.4**.
 
 ```
 daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
@@ -94,7 +94,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
 | `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
-| `Kyd.Event` | `Event`, `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
+| `Kyd.Event` | `Event` (tiered), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
 | `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program + tranche secondary market |
 
@@ -103,11 +103,13 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 ```
 operator --Invitation--> venue/artist/fan/lender        (onboarding)
 venue+artist+operator: create Event                      (primary issuance authority)
-Event.Event_Issue ----> Ticket (owner = fan)             (comps/door sales, issued++)
-fan: PurchaseOrder --Fill(operator)-->                   (paid primary sale, atomic:)
+Event.Event_Issue(tier) ----> Ticket (owner = fan)       (comps/door sales, issued++)
+fan: PurchaseOrder(tier) --Fill(operator)-->             (paid primary sale, atomic:)
+    payment == tier's current dynamic price
     payment -> venue
     revenue share -> lenders via the active loan         (unbypassable routing)
-    Ticket -> fan
+    Ticket -> fan  [resale cap = paid price x capBps]
+Event_SetTierBasePrice (venue or artist)                 (manual dynamic pricing)
 Ticket.Ticket_Offer --> ResaleOffer  [price <= cap]      (locks the ticket)
 ResaleOffer.Accept(cash):                                (atomic DvP)
     royalty  -> artist
@@ -150,6 +152,21 @@ A 200 ticket sale settles through the loan: 100 is carved out pro-rata
 A 300 / B 200. Ten days past maturity, outstanding accrues 1% (A 303 / B 202),
 and a final 505 payment retires the loan — every leg atomic, every split exact.
 
+### Tiered seating + dynamic pricing
+
+Events are organised into tiers (GA / VIP / …), each with its own supply,
+base price and resale-cap policy. Two anti-scalping levers from KYD's playbook
+are encoded as contract law:
+
+- **On-ledger demand curve**: each sale in a tier escalates its price by
+  `demandBps` of base (deterministic and auditable — no oracle). The
+  operator's fill rejects payments at any other price, so a fan is never
+  charged a price they didn't sign for, and bots can't bulk-buy at a stale
+  price. The venue or the artist can also reprice a tier manually.
+- **Resale cap anchored to the price actually paid** (`resaleCapBps` x
+  purchase price), not one event-wide number — a fan who paid 51 on the curve
+  can resell at up to 76.5 (1.5x), and not a cent more.
+
 ### Worked example (from `testResaleWithRoyalty`)
 
 Face 50, resale cap 75, royalty 10%. Alice resells to Bob at **70**:
@@ -180,12 +197,15 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 9. `testTrancheSecondaryTrading` — tranche sold at a discount via atomic DvP;
    over-listing and non-KYC'd buyers rejected; the buyer participates pro-rata
    in subsequent distributions
+10. `testTieredDynamicPricing` — GA climbs 50 → 51 → 52 on the demand curve
+    (stale prices rejected) while VIP stays flat; per-purchase resale caps;
+    independent tier sell-out; artist repricing; unauthorized repricing
+    rejected
 
 ---
 
 ## Not in scope (next steps)
 
 - Open (non-invited) financing offerings with a public order book.
-- Tiered seating and dynamic pricing curves on `Event`.
 - Daml Triggers to auto-fill purchase orders and run late-interest accrual.
 - A `daml2js` codegen front-end + JSON API for the existing KYD web app.

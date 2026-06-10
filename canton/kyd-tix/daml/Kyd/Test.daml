@@ -47,7 +47,8 @@ cashOf p = do
   notes <- query @Cash p
   pure (foldl (\acc (_, c) -> if c.owner == p then acc + c.amount else acc) 0.0 notes)
 
--- An event with a 50 face price, a 75 resale cap and a 10% artist royalty.
+-- A single-tier event: GA at 50 with no demand escalator, a 1.5x resale cap
+-- (so 75 on a face-price purchase) and a 10% artist royalty.
 makeEvent : Cast -> Script (ContractId Event)
 makeEvent c =
   submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
@@ -57,11 +58,8 @@ makeEvent c =
     eventId = "SHOW-001"
     name = "Robert Plant — Live"
     eventTime = time (date 2026 Jul 4) 20 0 0
-    facePrice = 50.0
-    maxResalePrice = 75.0
     royaltyBps = 1000
-    totalSupply = 100
-    issued = 0
+    tiers = [Tier with tierId = "GA", basePrice = 50.0, demandBps = 0, resaleCapBps = 15000, supply = 100, issued = 0]
 
 -- 1. Onboarding handshake produces a counter-signed membership.
 testOnboarding : Script ()
@@ -78,9 +76,9 @@ testPrimarySale : Script ()
 testPrimarySale = do
   c <- setupCast
   ev <- makeEvent c
-  (ev1, _t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  (ev1, _t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
   Some ev1Data <- queryContractId c.operator ev1
-  ev1Data.issued === 1
+  sum (map (\t -> t.issued) ev1Data.tiers) === 1
   aliceTickets <- query @Ticket c.alice
   length aliceTickets === 1
 
@@ -90,7 +88,7 @@ testResaleWithRoyalty : Script ()
 testResaleWithRoyalty = do
   c <- setupCast
   ev <- makeEvent c
-  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
 
   -- Buyer is funded with exactly the 70 sale price.
   cash <- mint c c.bob 70.0
@@ -114,7 +112,7 @@ testResaleCapEnforced : Script ()
 testResaleCapEnforced = do
   c <- setupCast
   ev <- makeEvent c
-  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
   -- Cap is 75; offering at 100 must fail.
   submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 100.0)
 
@@ -123,7 +121,7 @@ testRedeemedCannotResell : Script ()
 testRedeemedCannotResell = do
   c <- setupCast
   ev <- makeEvent c
-  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice)
+  (_ev1, t1) <- submit c.venue $ exerciseCmd ev (Event_Issue with fan = c.alice, tierId = "GA")
   t1r <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
   submitMustFail c.alice $ exerciseCmd t1r (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
 
@@ -265,14 +263,14 @@ testPaidPrimarySaleRoutesRevenue = do
   -- An order that underpays the 50 face price cannot be filled.
   n40 <- mint c c.alice 40.0
   badOrder <- submit c.alice $ createCmd PurchaseOrder with
-    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", cashCid = n40
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n40
   submitMustFail c.operator $ exerciseCmd badOrder PurchaseOrder_Fill
 
   -- Exact face price fills: 50 paid, 50% share (25) routed pro-rata over the
   -- register (440/660): lender2 gets 10, lender gets 15; the venue keeps 25.
   n50 <- mint c c.alice 50.0
   order <- submit c.alice $ createCmd PurchaseOrder with
-    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", cashCid = n50
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n50
   (_, ticketCid) <- submit c.operator $ exerciseCmd order PurchaseOrder_Fill
 
   Some t <- queryContractId c.alice ticketCid
@@ -332,3 +330,71 @@ testTrancheSecondaryTrading = do
   lender2Bal === 220.0
   sellerBal2 === 450.0   -- 270 sale proceeds + 180 from the distribution
   bobBal     === 150.0
+
+-- A fan buys one ticket of a tier through the operator's sales engine.
+buy : Cast -> Party -> Text -> Text -> Decimal -> Script (ContractId Ticket)
+buy c fan eventId tierId price = do
+  n <- mint c fan price
+  order <- submit fan $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan, eventId, tierId, cashCid = n
+  (_, ticketCid) <- submit c.operator $ exerciseCmd order PurchaseOrder_Fill
+  pure ticketCid
+
+-- A purchase attempt that must be rejected at fill time.
+buyMustFail : Cast -> Party -> Text -> Text -> Decimal -> Script ()
+buyMustFail c fan eventId tierId price = do
+  n <- mint c fan price
+  order <- submit fan $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan, eventId, tierId, cashCid = n
+  submitMustFail c.operator $ exerciseCmd order PurchaseOrder_Fill
+
+-- 10. Tiered seating + dynamic pricing: GA's price climbs 2% of base per
+--     ticket sold while VIP stays flat; resale caps anchor to the price each
+--     fan actually paid; tiers sell out independently; venue/artist can
+--     reprice a tier manually.
+testTieredDynamicPricing : Script ()
+testTieredDynamicPricing = do
+  c <- setupCast
+  _ <- submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
+    operator = c.operator
+    venue = c.venue
+    artist = c.artist
+    eventId = "SHOW-002"
+    name = "Charli XCX — Live"
+    eventTime = time (date 2026 Sep 1) 21 0 0
+    royaltyBps = 1000
+    tiers =
+      [ Tier with tierId = "GA",  basePrice = 50.0,  demandBps = 200, resaleCapBps = 15000, supply = 3, issued = 0
+      , Tier with tierId = "VIP", basePrice = 100.0, demandBps = 0,   resaleCapBps = 12000, supply = 2, issued = 0
+      ]
+
+  -- GA demand curve: 50 -> 51 -> 52; paying yesterday's price is rejected.
+  _t1 <- buy c c.alice "SHOW-002" "GA" 50.0
+  buyMustFail c c.bob "SHOW-002" "GA" 50.0
+  t2 <- buy c c.bob "SHOW-002" "GA" 51.0
+  _t3 <- buy c c.alice "SHOW-002" "GA" 52.0
+  -- GA is sold out (supply 3), whatever the price offered.
+  buyMustFail c c.bob "SHOW-002" "GA" 53.0
+
+  -- The resale cap anchors to the price Bob actually paid: 51 x 1.5 = 76.5.
+  Some t2Data <- queryContractId c.bob t2
+  t2Data.facePrice === 51.0
+  t2Data.maxResalePrice === 76.5
+  submitMustFail c.bob $ exerciseCmd t2 (Ticket_Offer with buyer = c.alice, salePrice = 77.0)
+  resale <- submit c.bob $ exerciseCmd t2 (Ticket_Offer with buyer = c.alice, salePrice = 76.5)
+  _ <- submit c.bob $ exerciseCmd resale ResaleOffer_Withdraw
+
+  -- VIP is untouched by GA demand: still 100. Then the artist reprices it to
+  -- 80 and the next sale clears at the new base.
+  _t4 <- buy c c.bob "SHOW-002" "VIP" 100.0
+  _ <- submit c.artist $ exerciseByKeyCmd @Event (c.operator, "SHOW-002")
+    (Event_SetTierBasePrice with repricer = c.artist, tierId = "VIP", newBasePrice = 80.0)
+  _t5 <- buy c c.alice "SHOW-002" "VIP" 80.0
+
+  -- A random party cannot reprice.
+  submitMustFail c.bob $ exerciseByKeyCmd @Event (c.operator, "SHOW-002")
+    (Event_SetTierBasePrice with repricer = c.bob, tierId = "VIP", newBasePrice = 1.0)
+
+  -- Venue collected every primary sale: 50 + 51 + 52 + 100 + 80 = 333.
+  venueBal <- cashOf c.venue
+  venueBal === 333.0

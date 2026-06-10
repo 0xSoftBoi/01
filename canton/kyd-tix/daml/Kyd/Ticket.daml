@@ -14,8 +14,9 @@ template Ticket
     artist : Party
     owner : Party          -- current holder (the fan)
     eventId : Text
+    tierId : Text          -- seating tier this ticket was minted from
     serial : Int
-    facePrice : Decimal    -- primary-sale price
+    facePrice : Decimal    -- price actually paid at primary sale
     maxResalePrice : Decimal
     royaltyBps : Int       -- artist royalty on resale, in basis points
     redeemed : Bool

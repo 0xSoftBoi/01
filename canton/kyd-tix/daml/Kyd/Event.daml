@@ -1,11 +1,62 @@
--- | An event is the primary-issuance authority for its tickets. It carries the
---   anti-scalping policy (resale cap + royalty) that every minted ticket inherits,
---   and an authoritative issued-counter so the venue can never oversell.
+-- | An event is the primary-issuance authority for its tickets, now organised
+--   into seating tiers. Each tier carries its own supply, an on-ledger demand
+--   curve (the price escalates linearly as the tier sells), and a resale-cap
+--   policy anchored to the price the fan actually paid — KYD's anti-scalping
+--   levers (demand-based pricing + resale caps) expressed as contract law
+--   rather than marketplace convention.
 module Kyd.Event where
+
+import DA.List (unique)
 
 import Kyd.Cash
 import Kyd.Ticket
 import Kyd.Tix
+
+-- | A seating tier and its pricing policy.
+data Tier = Tier
+  with
+    tierId : Text          -- e.g. "GA", "VIP"
+    basePrice : Decimal
+    demandBps : Int        -- price rises by this many bps of base per ticket sold
+    resaleCapBps : Int     -- ticket resale cap = purchase price x this / 10000
+    supply : Int
+    issued : Int
+  deriving (Eq, Show)
+
+-- | Current price of the next ticket in a tier: a linear demand curve over
+--   tickets already sold. Deterministic and auditable — no oracle needed.
+tierPrice : Tier -> Decimal
+tierPrice t = t.basePrice * (1.0 + intToDecimal (t.issued * t.demandBps) / 10000.0)
+
+validTier : Tier -> Bool
+validTier t = t.supply > 0 && t.issued >= 0 && t.issued <= t.supply
+  && t.basePrice >= 0.0 && t.demandBps >= 0 && t.resaleCapBps >= 10000
+
+-- | Mint the next ticket from a tier at its current dynamic price. The ticket
+--   inherits its resale cap from the price actually paid. Returns the updated
+--   tier list, the ticket, and the price charged.
+mintTicket : Event -> Party -> Text -> Update ([Tier], ContractId Ticket, Decimal)
+mintTicket ev fan tierId =
+  case filter (\t -> t.tierId == tierId) ev.tiers of
+    [tier] -> do
+      assertMsg "tier is sold out" (tier.issued < tier.supply)
+      let price = tierPrice tier
+          serial = sum (map (\t -> t.issued) ev.tiers) + 1
+      ticketCid <- create Ticket with
+        operator = ev.operator
+        venue = ev.venue
+        artist = ev.artist
+        owner = fan
+        eventId = ev.eventId
+        tierId
+        serial
+        facePrice = price
+        maxResalePrice = price * intToDecimal tier.resaleCapBps / 10000.0
+        royaltyBps = ev.royaltyBps
+        redeemed = False
+      let newTiers = map (\t -> if t.tierId == tierId then t with issued = t.issued + 1 else t) ev.tiers
+      pure (newTiers, ticketCid, price)
+    _ -> abort ("unknown tier: " <> tierId)
 
 template Event
   with
@@ -15,86 +66,84 @@ template Event
     eventId : Text
     name : Text
     eventTime : Time
-    facePrice : Decimal
-    maxResalePrice : Decimal
     royaltyBps : Int
-    totalSupply : Int
-    issued : Int
+    tiers : [Tier]
   where
     signatory operator, venue, artist
-    ensure totalSupply > 0 && issued >= 0 && issued <= totalSupply
-        && royaltyBps >= 0 && royaltyBps < 10000
-        && facePrice >= 0.0 && maxResalePrice >= facePrice
+    ensure royaltyBps >= 0 && royaltyBps < 10000
+        && not (null tiers)
+        && unique (map (\t -> t.tierId) tiers)
+        && all validTier tiers
 
     key (operator, eventId) : (Party, Text)
     maintainer key._1
 
     -- | Unpaid issuance (comps, door sales settled off-ledger): mint the next
-    --   ticket to a fan. Consuming + recreate keeps the issued-count
-    --   authoritative and prevents oversell under concurrency.
+    --   ticket of a tier to a fan. Consuming + recreate keeps the per-tier
+    --   issued-count authoritative and prevents oversell under concurrency.
     choice Event_Issue : (ContractId Event, ContractId Ticket)
-      with fan : Party
+      with
+        fan : Party
+        tierId : Text
       controller venue
       do
-        assertMsg "event is sold out" (issued < totalSupply)
-        ticketCid <- create Ticket with
-          operator
-          venue
-          artist
-          owner = fan
-          eventId
-          serial = issued + 1
-          facePrice
-          maxResalePrice
-          royaltyBps
-          redeemed = False
-        eventCid <- create this with issued = issued + 1
+        (newTiers, ticketCid, _) <- mintTicket this fan tierId
+        eventCid <- create this with tiers = newTiers
         pure (eventCid, ticketCid)
 
     -- | Paid primary sale, driven by the operator's sales engine. The payment
-    --   (already with the venue) must equal face price, and if a TIX loan is
-    --   active against this event, the lenders' revenue share is carved out in
-    --   the same transaction — the venue cannot receive primary revenue without
-    --   the loan being serviced.
+    --   (already with the venue) must equal the tier's current dynamic price,
+    --   and if a TIX loan is active against this event, the lenders' revenue
+    --   share is carved out in the same transaction — the venue cannot receive
+    --   primary revenue without the loan being serviced.
     choice Event_IssuePaid : (ContractId Event, ContractId Ticket)
       with
         fan : Party
+        tierId : Text
         paymentCid : ContractId Cash
       controller operator
       do
-        assertMsg "event is sold out" (issued < totalSupply)
         payment <- fetch paymentCid
-        assertMsg "payment must equal the face price" (payment.amount == facePrice)
         assertMsg "payment must already be with the venue" (payment.owner == venue)
+        (newTiers, ticketCid, price) <- mintTicket this fan tierId
+        assertMsg "payment must equal the tier's current price" (payment.amount == price)
         mLoan <- lookupByKey @SyndicatedLoan (operator, eventId)
         case mLoan of
           Some loanCid -> do
             _ <- exercise loanCid (Loan_SettleRevenue with revenueCid = paymentCid)
             pure ()
           None -> pure ()
-        ticketCid <- create Ticket with
-          operator
-          venue
-          artist
-          owner = fan
-          eventId
-          serial = issued + 1
-          facePrice
-          maxResalePrice
-          royaltyBps
-          redeemed = False
-        eventCid <- create this with issued = issued + 1
+        eventCid <- create this with tiers = newTiers
         pure (eventCid, ticketCid)
 
--- | A fan's signed order to buy one ticket at face price. The fan's signature
---   carries the authority to move their cash; the operator's fill executes
---   payment, loan settlement and ticket issuance as one atomic transaction.
+    -- | Manual dynamic pricing: the venue or the artist adjusts a tier's base
+    --   price in response to demand (the escalator then applies on top).
+    choice Event_SetTierBasePrice : ContractId Event
+      with
+        repricer : Party
+        tierId : Text
+        newBasePrice : Decimal
+      controller repricer
+      do
+        assertMsg "only the venue or the artist may reprice"
+          (repricer == venue || repricer == artist)
+        assertMsg "price must be non-negative" (newBasePrice >= 0.0)
+        assertMsg "unknown tier" (any (\t -> t.tierId == tierId) tiers)
+        create this with
+          tiers = map (\t -> if t.tierId == tierId then t with basePrice = newBasePrice else t) tiers
+
+-- | A fan's signed order to buy one ticket of a tier at its current price.
+--   The fan's signature carries the authority to move their cash; the
+--   operator's fill executes payment, loan settlement and ticket issuance as
+--   one atomic transaction. If demand moves the price between order and fill,
+--   the fill fails rather than charging the fan a price they never agreed to.
 template PurchaseOrder
   with
     operator : Party
     venue : Party
     fan : Party
     eventId : Text
+    tierId : Text
     cashCid : ContractId Cash
   where
     signatory fan
@@ -106,7 +155,7 @@ template PurchaseOrder
         (eventCid, ev) <- fetchByKey @Event (operator, eventId)
         assertMsg "order names a different venue" (ev.venue == venue)
         venueCash <- exercise cashCid (Cash_Transfer with newOwner = venue)
-        exercise eventCid (Event_IssuePaid with fan, paymentCid = venueCash)
+        exercise eventCid (Event_IssuePaid with fan, tierId, paymentCid = venueCash)
 
     choice PurchaseOrder_Cancel : ()
       controller fan
