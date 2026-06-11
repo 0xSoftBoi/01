@@ -409,14 +409,17 @@ template SyndicatedLoan
         create TrancheOffer with operator, eventId, seller, buyer, faceAmount, price
 
     -- | Registrar step of a tranche sale: move `faceAmount` of claim from
-    --   seller to buyer on the register. Exercised by the operator from within
-    --   'TrancheOffer_Accept', atomically with the buyer's payment.
+    --   seller to buyer on the register. Joint controllers (audit KYD-01): the
+    --   operator alone must not be able to rewrite the register, so the
+    --   seller's authority — present via the TrancheOffer it signed — is
+    --   required too. Exercised from 'TrancheOffer_Accept', atomically with
+    --   the buyer's payment.
     choice Loan_ExecuteTrancheTransfer : ContractId SyndicatedLoan
       with
         seller : Party
         buyer : Party
         faceAmount : Decimal
-      controller operator
+      controller operator, seller
       do
         case filter (\t -> t.lender == seller) tranches of
           [st] -> do

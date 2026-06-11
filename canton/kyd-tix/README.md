@@ -9,9 +9,14 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all 15 test scenarios pass on Daml SDK
-**2.10.4**. The model is engineered for Canton's contention semantics — see
-[Canton engineering](#canton-engineering) below. Operator
+It builds (LF 1.17, SCU-ready) and all **22 scenarios** pass on Daml SDK
+**2.10.4** — 15 functional plus a 7-suite adversarial security harness
+([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)), warning-free. The model is
+engineered for Canton's contention semantics — see
+[Canton engineering](#canton-engineering) below. The security review lives in
+[AUDIT.md](AUDIT.md); the production network plan (validator operation,
+Featured App status, Canton Coin incentives, CIP-56) in
+[validator/](validator/README.md). Operator
 automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
@@ -267,6 +272,13 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 14. `testReceiptRefund` — with no facility owed, operator+venue jointly refund
     an escrowed share to the venue
 
+**Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
+fail): forged cash issuance and theft, overdrafts, authority abuse on
+issuance/repricing/fills, unilateral escrow refunds, register tampering by the
+operator (audit KYD-01), cross-facility receipt injection, resale
+double-listing and impersonation, membership forgery. Findings and trust model
+in [AUDIT.md](AUDIT.md).
+
 ---
 
 ## Automation & integration (`integration/`)
@@ -280,8 +292,20 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
   (`@kyd/kyd-tix-0.1.0`) for the web app; `integration/client/` shows a fan
   buying a ticket over HTTP; `integration/run-local.sh` boots the full stack.
 
+## Canton Network deployment (`validator/`)
+
+[validator/README.md](validator/README.md) is the production plan: running the
+KYD validator node against the Global Synchronizer (DevNet → TestNet →
+MainNet sponsorship), the **Featured Application** path (⅔ SV vote →
+`FeaturedAppRight` → activity markers → `AppRewardCoupon` → Canton Coin),
+the post-April-2026 incentive economics (usage-based rewards, 62% app pool
+until mid-2029 — at volume, Featured App rewards exceed traffic fees), and
+the **CIP-56 token standard** swap that replaces `Kyd.Cash` with registry-
+custodied holdings/allocations (retiring audit finding KYD-02).
+
 ## Not in scope (next steps)
 
-- A production Canton topology (multi-participant, per-stakeholder nodes) and
-  JWT auth wiring in front of the JSON API.
+- Vendoring the splice DARs to emit `FeaturedAppActivityMarker`s from the
+  trigger submissions (deployment wiring; mapped in `validator/README.md`).
+- The CIP-56 holding/allocation swap for `Kyd.Cash` (seams documented).
 - Tiered seating maps / seat-level inventory (today tiers are fungible pools).
