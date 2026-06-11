@@ -18,10 +18,14 @@ Triggers are long-running processes that react to ledger events under one
 party's authority (here `KYD-Operator`), turning the manual operator choices
 into hands-off services:
 
-- **`autoFillOrders`** — whenever a fan submits a `PurchaseOrder`, fills it. The
-  fill is atomic (payment → venue, loan revenue-share carved out, ticket minted)
-  and self-guarding, so an order priced below the tier's live price just fails
-  ledger-side.
+- **`autoFillOrders`** — whenever a fan submits a `PurchaseOrder`, picks a
+  matching open `TierAllocation` shard and fills against it (this rule is the
+  shard load-balancer). The fill is atomic (payment → venue, financing share →
+  escrowed receipt, ticket minted) and self-guarding, so an order priced below
+  the shard's price just fails ledger-side.
+- **`sweepRevenue`** — every few minutes, sweeps all pending `RevenueShare`
+  receipts of each facility through the loan in ONE consuming exercise — the
+  batching pattern that keeps the loan contract cold however hot sales run.
 - **`accrueLateInterest`** — on a daily heartbeat, attempts late-interest
   accrual on every `SyndicatedLoan`. The choice self-guards on elapsed time, so
   it is a no-op until a full day rolls over past maturity, then applies exactly
@@ -33,6 +37,7 @@ List them against the DAR:
 daml trigger list --dar ../.daml/dist/kyd-tix-0.1.0.dar
 #   Kyd.Triggers:accrueLateInterest
 #   Kyd.Triggers:autoFillOrders
+#   Kyd.Triggers:sweepRevenue
 ```
 
 ## JSON API + daml2js — `client/`

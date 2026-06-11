@@ -1,7 +1,7 @@
 -- | Off-ledger automation, expressed as Daml Triggers. A trigger is a long-
 --   running process that reacts to ledger events under a single party's
 --   authority — here the KYD operator — turning the manual operator choices
---   ('PurchaseOrder_Fill', 'Loan_AccrueLateInterest') into hands-off services.
+--   into hands-off services.
 --
 --   Run against a ledger with, e.g.:
 --     daml trigger --dar .daml/dist/kyd-tix-0.1.0.dar \
@@ -9,29 +9,68 @@
 --       --ledger-host localhost --ledger-port 6865 --ledger-party KYD-Operator
 module Kyd.Triggers where
 
-import DA.Action (when)
+import DA.Action (when, unless)
 import DA.Foldable (forA_)
-import DA.Time (hours)
+import DA.Time (hours, minutes)
 import Daml.Trigger
 
 import Kyd.Event
+import Kyd.Settlement
 import Kyd.Tix
 
--- | The sales engine. Whenever a fan submits a 'PurchaseOrder', fill it: the
---   fill is atomic (payment → venue, loan revenue-share carved out, ticket
---   minted) and self-guarding, so an order priced below the tier's current
---   price simply fails ledger-side and is left for the operator to reject.
+-- | The sales engine and shard load-balancer. For each fan 'PurchaseOrder',
+--   pick a matching open 'TierAllocation' and fill against it. The fill is
+--   atomic (payment → venue, financing share → escrowed receipt, ticket
+--   minted) and self-guarding, so an order priced below the shard's price
+--   simply fails ledger-side. In production this rule is where you spread
+--   load across shards (e.g. hash the order id over the candidate list).
 autoFillOrders : Trigger ()
 autoFillOrders = Trigger with
   initialize = pure ()
   updateState = \_ -> pure ()
-  registeredTemplates = RegisteredTemplates [registeredTemplate @PurchaseOrder]
+  registeredTemplates = RegisteredTemplates
+    [ registeredTemplate @PurchaseOrder
+    , registeredTemplate @TierAllocation
+    ]
   heartbeat = None
   rule = \operator -> do
     orders <- query @PurchaseOrder
+    allocs <- query @TierAllocation
     forA_ orders $ \(cid, order) ->
       when (order.operator == operator) $
-        dedupExercise cid PurchaseOrder_Fill
+        case [ aCid | (aCid, a) <- allocs
+                    , a.operator == operator
+                    , a.venue == order.venue
+                    , a.eventId == order.eventId
+                    , a.tierId == order.tierId
+                    , a.sold < a.size ] of
+          (aCid :: _) -> dedupExercise cid (PurchaseOrder_Fill with allocationCid = aCid)
+          [] -> pure ()
+
+-- | Batch revenue settlement: periodically sweep all pending 'RevenueShare'
+--   receipts of each facility through the loan in ONE consuming exercise —
+--   the batching pattern that keeps the loan contract cold no matter how hot
+--   ticket sales run.
+sweepRevenue : Trigger ()
+sweepRevenue = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates
+    [ registeredTemplate @RevenueShare
+    , registeredTemplate @SyndicatedLoan
+    ]
+  heartbeat = Some (minutes 5)
+  rule = \operator -> do
+    receipts <- query @RevenueShare
+    loans <- query @SyndicatedLoan
+    forA_ loans $ \(loanCid, loan) ->
+      when (loan.operator == operator) $ do
+        let pending = [ rCid | (rCid, r) <- receipts
+                             , r.operator == operator
+                             , r.venue == loan.venue
+                             , r.eventId == loan.eventId ]
+        unless (null pending) $
+          dedupExercise loanCid (Loan_SweepRevenue with receiptCids = pending)
 
 -- | The agent's accrual job. On a daily heartbeat, attempt to accrue late
 --   interest on every syndicated loan. The choice self-guards on elapsed time,

@@ -50,3 +50,11 @@ template Cash
           (other.owner == owner && other.operator == operator)
         archive otherCid
         create this with amount = amount + other.amount
+
+-- | Merge a list of notes into the first (all same owner/operator). Used by
+--   batch settlement to consolidate many small escrows into one waterfall run.
+mergeMany : ContractId Cash -> [ContractId Cash] -> Update (ContractId Cash)
+mergeMany acc [] = pure acc
+mergeMany acc (x :: xs) = do
+  acc' <- exercise acc (Cash_Merge with otherCid = x)
+  mergeMany acc' xs

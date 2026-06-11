@@ -23,10 +23,11 @@ template Ticket
   where
     signatory operator, venue
     observer owner, artist
+    -- No contract key: serial uniqueness is guaranteed by construction (each
+    -- TierAllocation owns a disjoint serial range), and Canton cannot enforce
+    -- key uniqueness across sync domains anyway — a key here would add
+    -- maintainer-coordination cost on the hottest template for no benefit.
     ensure royaltyBps >= 0 && royaltyBps < 10000 && maxResalePrice >= 0.0
-
-    key (operator, eventId, serial) : (Party, Text, Int)
-    maintainer key._1
 
     -- | Door scan. Once redeemed a ticket can no longer be resold.
     choice Ticket_CheckIn : ContractId Ticket

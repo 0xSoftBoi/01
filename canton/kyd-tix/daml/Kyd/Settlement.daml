@@ -1,0 +1,37 @@
+-- | Contention decoupling between the sales hot path and the financing
+--   facility. Exercising a consuming choice on the loan inside every ticket
+--   sale would serialize ALL sales on one contract (write-write contention on
+--   Canton). Instead, each paid sale carves the lenders' revenue share into an
+--   operator-held escrow and records this create-only receipt — creates never
+--   contend — and the sweep automation periodically settles whole batches of
+--   receipts through the loan in a single consuming exercise.
+--
+--   Enforcement is unchanged: the venue never touches the carved-out share
+--   (it sits in operator custody, disclosed to the venue), and a refund needs
+--   BOTH operator and venue — the platform attests no facility is owed.
+module Kyd.Settlement where
+
+import Kyd.Cash
+
+template RevenueShare
+  with
+    operator : Party
+    venue : Party
+    eventId : Text
+    amount : Decimal
+    escrow : ContractId Cash   -- the carved-out share, in operator custody
+  where
+    signatory operator, venue
+    ensure amount > 0.0
+
+    -- | Hand the escrow to the sweep (exercised from 'Loan_SweepRevenue').
+    choice Receipt_Release : ContractId Cash
+      controller operator
+      do pure escrow
+
+    -- | Return the share to the venue when no facility is owed (e.g. the loan
+    --   was fully repaid, or the raise never happened). Joint controllers:
+    --   the operator-as-agent must co-sign that nothing is outstanding.
+    choice Receipt_Refund : ContractId Cash
+      controller operator, venue
+      do exercise escrow (Cash_Transfer with newOwner = venue)

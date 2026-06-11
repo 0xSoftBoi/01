@@ -26,6 +26,7 @@ import DA.Time (addRelTime, convertRelTimeToMicroseconds, days, subTime)
 
 import Kyd.Cash
 import Kyd.Roles
+import Kyd.Settlement
 
 -- | One lender's slice of the syndicate: how much it is still owed.
 data Tranche = Tranche
@@ -350,6 +351,44 @@ template SyndicatedLoan
         create this with
           tranches = map (\t -> t with outstanding = t.outstanding + t.outstanding * rate) tranches
           lastAccrual = addRelTime lastAccrual (days lateDays)
+
+    -- | Batch settlement of escrowed primary-sale revenue shares: N sales
+    --   produce N create-only 'RevenueShare' receipts, and this single
+    --   consuming exercise sweeps them all down the waterfall — one loan
+    --   archive per batch instead of one per ticket sale, which is the
+    --   batching/bundling pattern Canton's contention guidance prescribes.
+    --   If receipts exceed the remaining debt, the loan is retired and the
+    --   excess returns to the venue.
+    choice Loan_SweepRevenue : (Optional (ContractId SyndicatedLoan), Optional (ContractId Cash))
+      with receiptCids : [ContractId RevenueShare]
+      controller operator
+      do
+        assertMsg "sweep requires at least one receipt" (not (null receiptCids))
+        notes <- forA receiptCids $ \rCid -> do
+          r <- fetch rCid
+          assertMsg "receipt belongs to a different facility"
+            (r.operator == operator && r.venue == venue && r.eventId == eventId)
+          exercise rCid Receipt_Release
+        merged <- case notes of
+          (n :: ns) -> mergeMany n ns
+          [] -> abort "unreachable: receipts were asserted non-empty"
+        cash <- fetch merged
+        let totalOut = sum (map (\t -> t.outstanding) tranches)
+        if cash.amount <= totalOut
+          then do
+            newTranches <- payLenders (Some merged) (allocate cash.amount tranches)
+            let remaining = filter (\t -> t.outstanding > 0.0) newTranches
+            loanOpt <-
+              if null remaining
+                then pure None
+                else Some <$> create this with tranches = remaining
+            pure (loanOpt, None)
+          else do
+            -- Receipts exceed the remaining debt: settle in full, refund excess.
+            (excess, payCid) <- exercise merged (Cash_Split with splitAmount = totalOut)
+            _ <- payLenders (Some payCid) (allocate totalOut tranches)
+            excessVenue <- exercise excess (Cash_Transfer with newOwner = venue)
+            pure (None, Some excessVenue)
 
     -- | A lender lists part (or all) of its tranche for sale to a named buyer
     --   at an agreed price (discount or premium to face). Nonconsuming: the
