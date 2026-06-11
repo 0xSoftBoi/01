@@ -1,0 +1,17 @@
+{
+  "name": "KYD — Live events, reclaimed",
+  "short_name": "KYD",
+  "description": "Tickets, passes and resale on the Canton Network",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -7,4 +7,16 @@ parties:
 dependencies:
   - daml-prim
   - daml-stdlib
-  - daml-script
+  - daml-script-lts
+  - daml-trigger
+# CIP-56 token standard interfaces, vendored as a SEPARATE package (interfaces
+# must not live in the package that implements them, or SCU breaks). On a
+# Canton Network deployment, replace with the official splice-api-token-*-v1
+# DARs so the canonical package ids line up with Canton Coin / USDCx.
+data-dependencies:
+  - splice-token-standard/.daml/dist/splice-api-token-vendored-1.0.0.dar
+# LF 1.17 (with Canton protocol version 7) enables Smart Contract Upgrade (SCU):
+# new package versions can add Optional fields / choices with zero downtime and
+# no contract migration. daml-script-lts is the SCU-compatible script library.
+build-options:
+  - --target=1.17

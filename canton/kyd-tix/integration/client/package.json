@@ -1,0 +1,20 @@
+{
+  "name": "kyd-tix-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example typed client for the KYD TICKS/TIX ledger via the HTTP JSON API",
+  "scripts": {
+    "codegen": "../codegen.sh",
+    "build": "tsc",
+    "start": "ts-node src/buyTicket.ts"
+  },
+  "dependencies": {
+    "@daml/ledger": "2.10.4",
+    "@daml/types": "2.10.4",
+    "@kyd/kyd-tix-0.1.0": "file:daml.js/kyd-tix-0.1.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

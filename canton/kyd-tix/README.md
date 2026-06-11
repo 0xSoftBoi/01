@@ -9,13 +9,45 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds and all 11 test scenarios pass on Daml SDK **2.10.4**.
+It builds (LF 1.17, SCU-ready) and all **28 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), an 8-suite
+adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
+and 2 suites driving DvP settlement through the **real CIP-56 token-standard
+interfaces** (see [ecosystem integration](#ecosystem-integration-cip-56)
+below) — all warning-free, in CI on every push
+([workflow](../../.github/workflows/kyd-tix.yml)). The model is engineered for
+Canton's contention semantics — see [Canton engineering](#canton-engineering)
+below. The security review lives in [AUDIT.md](AUDIT.md); the production
+network plan in [validator/](validator/README.md) with an operational
+[RUNBOOK](validator/RUNBOOK.md); a native **SwiftUI fan app** lives in
+[ios/KYDFan](ios/KYDFan/README.md); and [HANDOFF.md](HANDOFF.md) maps what is
+verified, what is scaffolded, and the production gaps in priority order.
+Operator
+automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
+live in [`integration/`](integration/).
 
 ```
-daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
-daml test       # runs the Daml Script suite in Kyd/Test.daml
-daml start       # boots a sandbox ledger + Navigator to click through it
+make test     # both Daml packages + all 28 scenarios
+make app      # typed bindings + web app production build
+make demo     # sandbox + demo seed + JSON API + triggers
+cd app && npm run dev           # the product UI (PWA-installable)
+ios/KYDFan                       # native SwiftUI fan app (see its README)
 ```
+
+## The product (`app/`)
+
+KYD's value-add is UX — fans never feel the blockchain — so the repo ships the
+product surface, not just the model: a React/TypeScript app (typed end-to-end
+via `daml codegen js`, production build verified) with a role switcher over
+one seeded world. Fans get one-tap buys (filled live by the price-aware
+operator trigger), QR passes, and capped resale with the limit surfaced in the
+form and enforced on the ledger; the venue gets a door scanner where
+double-check-in is impossible (consuming choice) and a dashboard with
+demand-curve inventory control, the TIX register and pending escrows; the
+artist watches royalties accrue from every resale. Architecture notes — why
+the catalog reads via the operator while every action signs as the fan, and
+why "no wallets" is the hosted-party model, not a hack — in
+[app/README.md](app/README.md).
 
 ---
 
@@ -93,23 +125,30 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | Module | Templates | Solana equivalent |
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
-| `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
-| `Kyd.Event` | `Event` (tiered), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
-| `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
-| `Kyd.Tix` | `FinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program + tranche secondary market |
+| `Kyd.Cash` | `Cash` (implements CIP-56 `Holding`) | USDC SPL token (here: operator IOU, wallet-visible via the token standard) |
+| `Kyd.Event` | `Event` (cold master), `TierAllocation` (hot shards), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
+| `Kyd.Ticket` | `Ticket`, `ResaleOffer`, `DvPResaleOffer`, `RoyaltyAccount` | The TICKS asset + two settlement rails (cash, CIP-56 allocations) |
+| `Kyd.MockRegistry` | `MockAllocation` (implements CIP-56 `Allocation`) | Reference registry so tests drive the standard interface end-to-end |
+| `splice-token-standard/` | vendored `Splice.Api.Token.{MetadataV1,HoldingV1,AllocationV1}` | The CIP-56 interfaces (separate package, as SCU requires) |
+| `Kyd.Settlement` | `RevenueShare` | Escrowed financing carve-outs (contention decoupling) |
+| `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, batch sweep, tranche secondary market |
+| `Kyd.Triggers` | `autoFillOrders`, `sweepRevenue`, `accrueLateInterest` | Operator automation (off-ledger Daml Triggers) — see `integration/` |
 
 ### Lifecycle
 
 ```
 operator --Invitation--> venue/artist/fan/lender        (onboarding)
-venue+artist+operator: create Event                      (primary issuance authority)
-Event.Event_Issue(tier) ----> Ticket (owner = fan)       (comps/door sales, issued++)
-fan: PurchaseOrder(tier) --Fill(operator)-->             (paid primary sale, atomic:)
-    payment == tier's current dynamic price
-    payment -> venue
-    revenue share -> lenders via the active loan         (unbypassable routing)
+venue+artist+operator: create Event                      (cold master: tier policies)
+Event_OpenAllocation(tier, size) --> TierAllocation      (hot shard @ demand-curve step)
+TierAllocation.Allocation_Issue --> Ticket               (comps/door sales)
+fan: PurchaseOrder(tier) --Fill(operator, shard)-->      (paid primary sale, atomic:)
+    payment == shard price
+    venue's portion -> venue
+    financing share -> escrowed RevenueShare receipt     (create-only: no loan contention)
     Ticket -> fan  [resale cap = paid price x capBps]
-Event_SetTierBasePrice (venue or artist)                 (manual dynamic pricing)
+operator: Loan_SweepRevenue([receipts])                  (batch: one loan write per sweep)
+    share --> lenders pro-rata; excess -> venue; loan retired at zero
+Event_SetTierBasePrice / Allocation_Reprice              (manual dynamic pricing)
 Ticket.Ticket_Offer --> ResaleOffer  [price <= cap]      (locks the ticket)
 ResaleOffer.Accept(cash):                                (atomic DvP)
     royalty  -> artist
@@ -117,8 +156,11 @@ ResaleOffer.Accept(cash):                                (atomic DvP)
     ticket   -> buyer
 Ticket.Ticket_CheckIn -> redeemed (resale now blocked)   (door scan)
 
-venue+operator: FinancingOffering (invited lenders)      (TIX: open the raise)
+venue+operator: FinancingOffering (invited lenders)      (TIX: targeted raise)
+              | OpenFinancingOffering (observer: public)  (TIX: open order book)
 Offering_Commit(cash) per lender --> escrow w/ operator  (lock-by-safekeeping)
+  open book: any lender holding a Lender membership       (KYC gate, no invite)
+             reads `public` to discover and commit
   Offering_Uncommit / Offering_Cancel --> refunds        (escape hatches)
 Offering_Activate [fully subscribed]:                    (atomic)
     principal -> venue
@@ -135,12 +177,52 @@ TrancheOffer_Accept(cash) [buyer + operator]:            (atomic DvP, KYC-gated)
 ```
 
 The paid primary sale is the piece that makes TIX's *"ticket revenue
-automatically enforces repayment"* literal on Canton: issuance, payment and
-loan settlement are one transaction, so the venue cannot receive primary
-revenue without the lenders' share being carved out first. The tranche market
+automatically enforces repayment"* literal on Canton: at the moment of sale the
+lenders' share is carved into operator-held escrow, so the venue never touches
+it — and the sweep settles whole batches through the loan. The tranche market
 clears through the operator (joint controller), mirroring the agent-bank role
 in real syndications, and buyers must hold a `Lender` membership — an on-ledger
 KYC gate for the RWA story.
+
+### Canton engineering
+
+This model is shaped by Canton's execution semantics, not just Daml's type
+system. Per the official [contention guidance](https://docs.daml.com/daml/resource-management/contention-avoiding.html):
+only one consuming choice can ever be exercised per contract, so any contract
+consumed on a high-frequency path serializes that path and causes retry storms.
+
+**Hot-path analysis and the fixes:**
+
+| Naive design (v1) | Problem on Canton | This model |
+| --- | --- | --- |
+| One `Event` contract consumed per ticket sale | A 10k-fan on-sale = 10k strictly sequential consumes of one contract | **Cold master / hot shards**: `Event_OpenAllocation` carves disjoint `TierAllocation` blocks; N open shards = N parallel sales streams (`testParallelShards`) |
+| `Loan_SettleRevenue` exercised inside every fill | Every sale also consumes the loan → ALL sales serialized on one contract, sales latency coupled to financing | **Create-only receipts + batch sweep**: fills create `RevenueShare` escrows (creates never contend); `Loan_SweepRevenue` settles whole batches in one loan write (`testBatchSweep`: 5 sales, 1 sweep) |
+| `lookupByKey` on the sales hot path | Key resolution adds maintainer coordination per sale; Canton [cannot enforce key uniqueness across sync domains](https://docs.daml.com/2.6.5/canton/tutorials/composability.html) | Hot path is **key-free**: fills work entirely on explicit contract ids; keys survive only on cold admin contracts (`Event` master, `Membership`, loan-by-event for the tranche market) |
+| `Ticket` carried a contract key | Uniqueness checks on the hottest template, for nothing | Dropped — serial uniqueness holds **by construction** (each shard owns a disjoint serial range) |
+| Global per-sale demand curve | Needs a global counter = a synchronization bottleneck (the docs' anti-pattern) | **Step curve over allocations**: each successive shard prices at `base x (1 + allocated x demandBps/10⁴)` — same economics, zero shared state between sales |
+
+**Upgrade readiness (SCU):** built with `--target=1.17` and `daml-script-lts`,
+which enables [Smart Contract Upgrade](https://docs.daml.com/upgrade/smart-contract-upgrades.html)
+on Canton protocol 7 — future package versions can append `Optional` fields and
+choices with zero downtime and no contract migration.
+
+**Privacy posture:** sub-transaction privacy does the segmentation (a fan sees
+only their tickets; a lender only their syndicates), escrow visibility is
+explicit via `Cash` disclosure (no deprecated divulgence anywhere — the test
+suite runs warning-free), and the open order book uses the public-party
+broadcast pattern rather than widening observers on business contracts.
+
+### Targeted vs. open financing (the public-party pattern)
+
+A contract is only visible to its stakeholders, so an *open* raise needs a way
+for unknown lenders to discover it. `OpenFinancingOffering` is observed by a
+well-known **`public`** party that every onboarded lender reads (`readAs`),
+forming a public order book — the standard Canton broadcast pattern. Eligibility
+moves from an invite list to **on-ledger credentials**: `OpenOffering_Commit`
+looks up the committer's `Lender` membership (`Kyd.Roles`) as a KYC gate, so
+anyone with a credential can fund and nobody else can. Both paths converge on
+the same `SyndicatedLoan`, so settlement, the waterfall and the tranche market
+are identical downstream.
 
 ### TIX worked example (from `testSyndicatedFinancing`)
 
@@ -154,15 +236,17 @@ and a final 505 payment retires the loan — every leg atomic, every split exact
 
 ### Tiered seating + dynamic pricing
 
-Events are organised into tiers (GA / VIP / …), each with its own supply,
-base price and resale-cap policy. Two anti-scalping levers from KYD's playbook
-are encoded as contract law:
+Events are organised into tiers (GA / VIP / …), each with its own supply, base
+price and resale-cap policy, carved into fixed-price allocations for sale. Two
+anti-scalping levers from KYD's playbook are encoded as contract law:
 
-- **On-ledger demand curve**: each sale in a tier escalates its price by
-  `demandBps` of base (deterministic and auditable — no oracle). The
-  operator's fill rejects payments at any other price, so a fan is never
-  charged a price they didn't sign for, and bots can't bulk-buy at a stale
-  price. The venue or the artist can also reprice a tier manually.
+- **On-ledger demand curve**: each successive allocation of a tier prices one
+  step higher (`demandBps` of base per ticket already allocated) — a
+  deterministic, auditable step function, with no oracle and no shared counter
+  between concurrent sales. Fills reject payments at any other price, so a fan
+  is never charged a price they didn't sign for, and bots can't bulk-buy at a
+  stale price. The venue or the artist can also reprice a tier's base
+  (`Event_SetTierBasePrice`) or an open shard (`Allocation_Reprice`).
 - **Resale cap anchored to the price actually paid** (`resaleCapBps` x
   purchase price), not one event-wide number — a fan who paid 51 on the curve
   can resell at up to 76.5 (1.5x), and not a cent more.
@@ -192,20 +276,108 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 7. `testOfferingCancelAndUncommit` — lender withdrawal and venue cancellation
    both refund escrow in full
 8. `testPaidPrimarySaleRoutesRevenue` — a fan's purchase order fills atomically:
-   payment, loan revenue-share carve-out and ticket mint in one transaction;
-   underpayment cannot fill
+   payment to the venue, financing share into an escrowed receipt (loan
+   untouched on the hot path), ticket minted; underpayment cannot fill; the
+   sweep then settles the receipt pro-rata
 9. `testTrancheSecondaryTrading` — tranche sold at a discount via atomic DvP;
    over-listing and non-KYC'd buyers rejected; the buyer participates pro-rata
    in subsequent distributions
-10. `testTieredDynamicPricing` — GA climbs 50 → 51 → 52 on the demand curve
-    (stale prices rejected) while VIP stays flat; per-purchase resale caps;
-    independent tier sell-out; artist repricing; unauthorized repricing
-    rejected
+10. `testTieredDynamicPricing` — successive GA shards price 50 → 51 → 52 on the
+    step curve (stale prices rejected) while VIP stays flat; per-purchase
+    resale caps; supply enforced at the master; shard repricing by the artist;
+    unauthorized repricing rejected
+11. `testOpenOrderBook` — non-invited raise broadcast to the public party;
+    onboarded lenders discover and commit via `readAs public`; non-onboarded
+    party rejected at the KYC gate; converts to the same syndicated loan
+12. `testParallelShards` — two shards of one tier sell independently (no
+    write-write contention) with disjoint serial ranges by construction
+13. `testBatchSweep` — five sales → five create-only receipts → ONE consuming
+    sweep on the loan; over-collection retires the loan and refunds the excess
+14. `testReceiptRefund` — with no facility owed, operator+venue jointly refund
+    an escrowed share to the venue
+
+**Token-standard suite** (`Kyd.TokenTest`): `testCip56DvPResale` — full DvP
+through the real `Allocation` interface (two legs + ticket, one transaction);
+`testCip56LegValidation` — short legs, foreign settlement references,
+third-party-funded legs and missing royalty legs all rejected; withdrawn
+allocations refund through the registry.
+
+**Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
+fail): forged cash issuance and theft, overdrafts, authority abuse on
+issuance/repricing/fills, unilateral escrow refunds, register tampering by the
+operator (audit KYD-01), cross-facility receipt injection, resale
+double-listing and impersonation, membership forgery. Findings and trust model
+in [AUDIT.md](AUDIT.md).
 
 ---
 
+## Automation & integration (`integration/`)
+
+- **Daml Triggers** (`Kyd.Triggers`): `autoFillOrders` settles fan purchase
+  orders and load-balances them across open shards; `sweepRevenue` batches
+  escrowed receipts through each loan every few minutes (one loan write per
+  sweep); `accrueLateInterest` runs daily accrual on overdue loans. All three
+  compile into the DAR and are listed by the trigger runner.
+- **JSON API + daml2js**: `integration/codegen.sh` generates typed TS bindings
+  (`@kyd/kyd-tix-0.1.0`) for the web app; `integration/client/` shows a fan
+  buying a ticket over HTTP; `integration/run-local.sh` boots the full stack.
+
+## Ecosystem integration (CIP-56)
+
+**Why this integration and not another:** the highest-volume Canton activity
+(e.g. [Broadridge DLR's ~$8T/month repo flows](https://messari.io/report/understanding-canton-network-a-comprehensive-overview))
+runs on *private* synchronizers — not integrable. The highest-usage
+*integrable* surfaces on the Global Synchronizer are **Canton Coin** (the
+network's native payment app, with network activity of
+[600k–1M+ daily transactions](https://coinstats.app/ai/a/investment-analysis-canton-network))
+and **[USDCx](https://www.canton.network/blog/usdcx-now-live-on-canton-unlocking-private-and-composable-usdc-backed-settlement)**
+(Circle xReserve-backed, already used in live on-chain repo settlement, with
+[BitGo qualified custody](https://www.bitgo.com/resources/blog/bitgo-extends-canton-support-to-the-cip-56-token-standard/)).
+Both — and every other major Canton asset — speak the
+**[CIP-56 token standard](https://www.canton.network/blog/what-is-cip-56-a-guide-to-cantons-token-standard)**.
+So the one integration that composes with all of them is the standard itself:
+
+- **`Kyd.Cash` implements the `Holding` interface** — every CIP-56 wallet
+  (Loop, Canton Coin wallets) discovers and displays TIX balances via an
+  `InterfaceFilter` on `Splice.Api.Token.HoldingV1:Holding`, no
+  KYD-specific wallet code.
+- **Ticket resale settles via the `Allocation` API** (`Ticket_OfferDvP` →
+  `DvPResaleOffer`): the buyer's wallet allocates two standard transfer legs
+  (seller proceeds + artist royalty) in **any CIP-56 asset — Canton Coin,
+  USDCx, cBTC — and settlement executes both allocations and the ticket
+  transfer in one atomic transaction.** The settlement code speaks only the
+  interface, so no code changes per asset.
+- **The royalty leg is the subtle part**: executing an allocation requires the
+  *receiver's* authority, and the artist doesn't sign resale offers. The
+  artist's standing `RoyaltyAccount` (signed once at onboarding) lends that
+  authority to settlements through its choice — a worked example of Daml's
+  authority-propagation rules.
+- The interfaces are **vendored unmodified** from
+  [hyperledger-labs/splice](https://github.com/hyperledger-labs/splice)
+  (Apache-2.0) as a **separate package** — the SCU checker itself enforces
+  that interfaces and implementations must not share a package. On-network
+  deployments swap the vendored DAR for the official `splice-api-token-*-v1`
+  releases (one `daml.yaml` line) so package ids match what Canton Coin and
+  USDCx implement. `Kyd.MockRegistry` is the reference `Allocation`
+  implementation that lets `daml test` drive the whole rail through the
+  standard interface.
+
+## Canton Network deployment (`validator/`)
+
+[validator/README.md](validator/README.md) is the production plan: running the
+KYD validator node against the Global Synchronizer (DevNet → TestNet →
+MainNet sponsorship), the **Featured Application** path (⅔ SV vote →
+`FeaturedAppRight` → activity markers → `AppRewardCoupon` → Canton Coin),
+the post-April-2026 incentive economics (usage-based rewards, 62% app pool
+until mid-2029 — at volume, Featured App rewards exceed traffic fees), and
+the **CIP-56 token standard** swap that replaces `Kyd.Cash` with registry-
+custodied holdings/allocations (retiring audit finding KYD-02).
+
 ## Not in scope (next steps)
 
-- Open (non-invited) financing offerings with a public order book.
-- Daml Triggers to auto-fill purchase orders and run late-interest accrual.
-- A `daml2js` codegen front-end + JSON API for the existing KYD web app.
+- Vendoring the splice amulet DARs to emit `FeaturedAppActivityMarker`s from
+  the trigger submissions (deployment wiring; mapped in `validator/README.md`).
+- Extending the CIP-56 allocation rail from resale to the financing escrows
+  (commitments and revenue shares as locked holdings — retires audit KYD-02
+  fully; the resale rail already demonstrates the pattern).
+- Tiered seating maps / seat-level inventory (today tiers are fungible pools).

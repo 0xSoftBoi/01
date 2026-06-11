@@ -1,0 +1,96 @@
+-- | Off-ledger automation, expressed as Daml Triggers. A trigger is a long-
+--   running process that reacts to ledger events under a single party's
+--   authority — here the KYD operator — turning the manual operator choices
+--   into hands-off services.
+--
+--   Run against a ledger with, e.g.:
+--     daml trigger --dar .daml/dist/kyd-tix-0.1.0.dar \
+--       --trigger-name Kyd.Triggers:autoFillOrders \
+--       --ledger-host localhost --ledger-port 6865 --ledger-party KYD-Operator
+module Kyd.Triggers where
+
+import DA.Action (when, unless)
+import DA.Foldable (forA_)
+import DA.Time (hours, minutes)
+import Daml.Trigger
+
+import Kyd.Cash
+import Kyd.Event
+import Kyd.Settlement
+import Kyd.Tix
+
+-- | The sales engine and shard load-balancer. For each fan 'PurchaseOrder',
+--   pick an open 'TierAllocation' whose price matches the fan's committed
+--   payment (shards at different demand-curve steps coexist, so matching on
+--   tier alone could pair a 50 payment with a 55 shard and fail forever),
+--   then fill against it. The fill is atomic and self-guarding. In production
+--   this rule is also where you spread load across same-price shards.
+autoFillOrders : Trigger ()
+autoFillOrders = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates
+    [ registeredTemplate @PurchaseOrder
+    , registeredTemplate @TierAllocation
+    , registeredTemplate @Cash
+    ]
+  heartbeat = None
+  rule = \operator -> do
+    orders <- query @PurchaseOrder
+    allocs <- query @TierAllocation
+    cashes <- query @Cash
+    forA_ orders $ \(cid, order) ->
+      when (order.operator == operator) $
+        case [ amt | (cashCid, cash) <- cashes, cashCid == order.cashCid, let amt = cash.amount ] of
+          [committed] ->
+            case [ aCid | (aCid, a) <- allocs
+                        , a.operator == operator
+                        , a.venue == order.venue
+                        , a.eventId == order.eventId
+                        , a.tierId == order.tierId
+                        , a.price == committed
+                        , a.sold < a.size ] of
+              (aCid :: _) -> dedupExercise cid (PurchaseOrder_Fill with allocationCid = aCid)
+              [] -> pure ()
+          _ -> pure ()
+
+-- | Batch revenue settlement: periodically sweep all pending 'RevenueShare'
+--   receipts of each facility through the loan in ONE consuming exercise —
+--   the batching pattern that keeps the loan contract cold no matter how hot
+--   ticket sales run.
+sweepRevenue : Trigger ()
+sweepRevenue = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates
+    [ registeredTemplate @RevenueShare
+    , registeredTemplate @SyndicatedLoan
+    ]
+  heartbeat = Some (minutes 5)
+  rule = \operator -> do
+    receipts <- query @RevenueShare
+    loans <- query @SyndicatedLoan
+    forA_ loans $ \(loanCid, loan) ->
+      when (loan.operator == operator) $ do
+        let pending = [ rCid | (rCid, r) <- receipts
+                             , r.operator == operator
+                             , r.venue == loan.venue
+                             , r.eventId == loan.eventId ]
+        unless (null pending) $
+          dedupExercise loanCid (Loan_SweepRevenue with receiptCids = pending)
+
+-- | The agent's accrual job. On a daily heartbeat, attempt to accrue late
+--   interest on every syndicated loan. The choice self-guards on elapsed time,
+--   so attempts before a full late day has passed are no-ops ledger-side; once
+--   a day rolls over past maturity, exactly one accrual is applied per loan.
+accrueLateInterest : Trigger ()
+accrueLateInterest = Trigger with
+  initialize = pure ()
+  updateState = \_ -> pure ()
+  registeredTemplates = RegisteredTemplates [registeredTemplate @SyndicatedLoan]
+  heartbeat = Some (hours 24)
+  rule = \operator -> do
+    loans <- query @SyndicatedLoan
+    forA_ loans $ \(cid, loan) ->
+      when (loan.operator == operator) $
+        dedupExercise cid Loan_AccrueLateInterest

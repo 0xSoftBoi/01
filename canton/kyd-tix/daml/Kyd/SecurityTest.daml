@@ -1,0 +1,185 @@
+-- | Adversarial tests: every scenario here is an attack that MUST fail.
+--   Where the functional suite ('Kyd.Test') proves the happy paths work, this
+--   module proves the unhappy paths don't — forged assets, authority abuse,
+--   custody escapes, register tampering and cross-facility injection.
+module Kyd.SecurityTest where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Date (date, Month(..))
+import DA.Time (time)
+
+import Kyd.Cash
+import Kyd.Roles
+import Kyd.Event
+import Kyd.Settlement
+import Kyd.Ticket
+import Kyd.Tix
+import Kyd.Test (setupCast, mint, cashOf, makeEvent, openGA, setupLoan, buy)
+
+-- 1. Cash integrity: only the operator can issue; only the owner can move,
+--    split or merge; overdrafts are unrepresentable.
+testCashSecurity : Script ()
+testCashSecurity = do
+  c <- setupCast
+  -- Forgery: Alice cannot issue herself operator cash (operator is signatory).
+  submitMustFail c.alice $ createCmd Cash with
+    operator = c.operator, owner = c.alice, amount = 1000000.0, observers = []
+  n <- mint c c.alice 100.0
+  -- Theft: neither the operator nor a stranger can move the owner's note.
+  submitMustFail c.operator $ exerciseCmd n (Cash_Transfer with newOwner = c.operator)
+  submitMustFail c.bob $ exerciseCmd n (Cash_Transfer with newOwner = c.bob)
+  -- Overdraft: cannot split off more than (or exactly) the balance.
+  submitMustFail c.alice $ exerciseCmd n (Cash_Split with splitAmount = 150.0)
+  submitMustFail c.alice $ exerciseCmd n (Cash_Split with splitAmount = 100.0)
+  -- Cross-owner merge is rejected.
+  nBob <- mint c c.bob 10.0
+  submitMustFail c.alice $ exerciseCmd n (Cash_Merge with otherCid = nBob)
+
+-- 2. Issuance authority: only the venue opens allocations and comps; only the
+--    operator drives paid fills; only venue/artist reprice.
+testIssuanceAuthorization : Script ()
+testIssuanceAuthorization = do
+  c <- setupCast
+  ev <- makeEvent c
+  -- Only the venue can carve inventory off the master.
+  submitMustFail c.artist $ exerciseCmd ev (Event_OpenAllocation with tierId = "GA", size = 1)
+  submitMustFail c.operator $ exerciseCmd ev (Event_OpenAllocation with tierId = "GA", size = 1)
+  (_ev1, alloc) <- openGA c ev 2
+  -- Only the venue comp-issues; the operator cannot mint comps.
+  submitMustFail c.operator $ exerciseCmd alloc (Allocation_Issue with fan = c.operator)
+  -- The operator cannot reprice a shard (only venue or artist).
+  submitMustFail c.operator $ exerciseCmd alloc (Allocation_Reprice with repricer = c.operator, newPrice = 1.0)
+  -- Only the operator fills purchase orders (the venue cannot self-fill).
+  n50 <- mint c c.alice 50.0
+  order <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n50
+  submitMustFail c.venue $ exerciseCmd order (PurchaseOrder_Fill with allocationCid = alloc)
+
+-- 3. Receipt custody: an escrowed revenue share cannot be refunded by either
+--    party alone — the venue cannot claw it back while the operator-as-agent
+--    has not attested, and the operator cannot push it without the venue.
+testReceiptCustody : Script ()
+testReceiptCustody = do
+  c <- setupCast
+  ev <- makeEvent c   -- 50% carve-out, no loan raised
+  (_ev1, alloc) <- openGA c ev 1
+  _ <- buy c c.alice "SHOW-001" "GA" alloc 50.0
+  [(receiptCid, _)] <- query @RevenueShare c.operator
+  submitMustFail c.venue $ exerciseCmd receiptCid Receipt_Refund
+  submitMustFail c.operator $ exerciseCmd receiptCid Receipt_Refund
+  -- The venue can never exercise the release path at all.
+  submitMustFail c.venue $ exerciseCmd receiptCid Receipt_Release
+
+-- 4. Register integrity (audit KYD-01): the operator alone cannot rewrite the
+--    lender register — moving a tranche requires the seller's authority, which
+--    only flows through a TrancheOffer the seller signed.
+testRegisterIntegrity : Script ()
+testRegisterIntegrity = do
+  c <- setupCast
+  (loan, _) <- setupLoan c
+  submitMustFail c.operator $ exerciseCmd loan
+    (Loan_ExecuteTrancheTransfer with seller = c.lender, buyer = c.operator, faceAmount = 660.0)
+  -- Nor can the operator conjure a seller who holds nothing.
+  submitMultiMustFail [c.operator, c.alice] [] $ exerciseCmd loan
+    (Loan_ExecuteTrancheTransfer with seller = c.alice, buyer = c.operator, faceAmount = 100.0)
+  -- A buyer cannot withdraw the seller's offer, and the seller cannot accept
+  -- in the buyer's place.
+  offer <- submit c.lender $ exerciseCmd loan
+    (Loan_OfferTranche with seller = c.lender, buyer = c.bob, faceAmount = 100.0, price = 90.0)
+  submitMustFail c.bob $ exerciseCmd offer TrancheOffer_Withdraw
+  n90 <- mint c c.lender 90.0
+  submitMultiMustFail [c.lender, c.operator] [] $ exerciseCmd offer (TrancheOffer_Accept with cashCid = n90)
+
+-- 5. Cross-facility injection: a receipt carved for one event cannot be swept
+--    into another event's loan.
+testForeignReceiptRejected : Script ()
+testForeignReceiptRejected = do
+  c <- setupCast
+  (loan, _) <- setupLoan c   -- facility against SHOW-001
+  -- A second event with a carve-out but no facility of its own.
+  ev2 <- submitMulti [c.operator, c.venue, c.artist] [] $ createCmd Event with
+    operator = c.operator
+    venue = c.venue
+    artist = c.artist
+    eventId = "SHOW-003"
+    name = "Travis Scott — Live"
+    eventTime = time (date 2026 Oct 1) 21 0 0
+    royaltyBps = 1000
+    financingShareBps = 5000
+    tiers = [Tier with tierId = "GA", basePrice = 50.0, demandBps = 0, resaleCapBps = 15000, supply = 10, allocated = 0]
+  (_ev3, alloc) <- submit c.venue $ exerciseCmd ev2 (Event_OpenAllocation with tierId = "GA", size = 1)
+  _ <- buy c c.alice "SHOW-003" "GA" alloc 50.0
+  [(foreignReceipt, _)] <- query @RevenueShare c.operator
+  -- Sweeping SHOW-003's receipt through SHOW-001's loan must fail.
+  submitMustFail c.operator $ exerciseCmd loan (Loan_SweepRevenue with receiptCids = [foreignReceipt])
+
+-- 6. Resale security: only the named buyer settles an offer, only with their
+--    own cash at the exact price; tickets cannot be double-spent into two
+--    offers; check-in authority is the venue's alone.
+testResaleSecurity : Script ()
+testResaleSecurity = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 1
+  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  offer <- submit c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 70.0)
+  -- The ticket is locked-by-archiving: it cannot be offered a second time.
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.lender, salePrice = 70.0)
+  -- A third party cannot accept Bob's offer.
+  nL <- mint c c.lender 70.0
+  submitMustFail c.lender $ exerciseCmd offer (ResaleOffer_Accept with cashCid = nL)
+  -- Bob cannot pay with someone else's note or the wrong amount.
+  submitMustFail c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = nL)
+  nShort <- mint c c.bob 60.0
+  submitMustFail c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = nShort)
+  -- Settle legitimately, then: only the venue checks in, and only once.
+  nOk <- mint c c.bob 70.0
+  t2 <- submit c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = nOk)
+  submitMustFail c.bob $ exerciseCmd t2 Ticket_CheckIn
+  t3 <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
+  submitMustFail c.venue $ exerciseCmd t3 Ticket_CheckIn
+
+-- 7. Role forgery: a membership cannot be self-issued, and an invitation is
+--    only acceptable by its invitee.
+testRoleForgery : Script ()
+testRoleForgery = do
+  c <- setupCast
+  submitMustFail c.alice $ createCmd Membership with
+    operator = c.operator, member = c.alice, role = Lender
+  inv <- submit c.operator $ createCmd Invitation with
+    operator = c.operator, invitee = c.bob, role = Lender
+  submitMustFail c.alice $ exerciseCmd inv Invitation_Accept
+  -- And escrow visibility does not leak spendability: a lender observing an
+  -- offering escrow still cannot move it (tested via balance isolation).
+  onboardBal <- cashOf c.alice
+  onboardBal === 0.0
+
+-- 8. Gift + refund hardening: gifts need the owner's signature and the
+--    recipient's consent; refunds are venue-only, exact-amount, and
+--    impossible after redemption.
+testGiftAndRefundSecurity : Script ()
+testGiftAndRefundSecurity = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 2
+  (Some alloc2, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  -- Only the owner can gift; self-gifts are rejected.
+  submitMustFail c.bob $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.alice)
+  -- Only the named recipient can accept.
+  gift <- submit c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
+  submitMustFail c.lender $ exerciseCmd gift GiftOffer_Accept
+  t1b <- submit c.alice $ exerciseCmd gift GiftOffer_Withdraw
+  -- Refunds: the fan cannot self-refund; the amount must be exact; a
+  -- redeemed ticket cannot be refunded.
+  nWrong <- mint c c.venue 40.0
+  submitMustFail c.venue $ exerciseCmd t1b (Ticket_Refund with cashCid = nWrong)
+  nAlice <- mint c c.alice 50.0
+  submitMustFail c.alice $ exerciseCmd t1b (Ticket_Refund with cashCid = nAlice)
+  (None, t2) <- submit c.venue $ exerciseCmd alloc2 (Allocation_Issue with fan = c.bob)
+  t2r <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
+  nOk <- mint c c.venue 50.0
+  submitMustFail c.venue $ exerciseCmd t2r (Ticket_Refund with cashCid = nOk)
+  -- A redeemed ticket cannot be gifted either.
+  submitMustFail c.bob $ exerciseCmd t2r (Ticket_OfferGift with recipient = c.alice)

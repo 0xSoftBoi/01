@@ -1,63 +1,81 @@
--- | An event is the primary-issuance authority for its tickets, now organised
---   into seating tiers. Each tier carries its own supply, an on-ledger demand
---   curve (the price escalates linearly as the tier sells), and a resale-cap
---   policy anchored to the price the fan actually paid — KYD's anti-scalping
---   levers (demand-based pricing + resale caps) expressed as contract law
---   rather than marketplace convention.
+-- | Issuance, engineered for Canton's contention model. Only one consuming
+--   choice can be exercised per contract, so a single event contract consumed
+--   on every sale would serialize an entire on-sale (and trigger retry storms
+--   under load). Instead:
+--
+--   * 'Event' is the COLD master: signed by operator+venue+artist, it holds
+--     the tier policies and is consumed only when carving out allocations —
+--     a per-price-level operation, not a per-ticket one.
+--   * 'TierAllocation' is the HOT shard: a disjoint block of inventory with a
+--     fixed price and its own serial range. Opening N shards yields N parallel
+--     sales streams that never touch the master, each other, or the loan.
+--   * The demand curve survives sharding as a step function: each successive
+--     allocation of a tier is priced off cumulative allocation
+--     (base x (1 + allocated x demandBps/10000)) — which is also how real
+--     on-sales price ("level 1", "level 2", ...).
+--   * Financing is decoupled from the hot path: a paid sale carves the
+--     lenders' share into a create-only 'RevenueShare' receipt
+--     ('Kyd.Settlement') instead of exercising the loan, removing both the
+--     loan contention and the hot-path 'lookupByKey' (a Canton multi-domain
+--     portability concern). The sweep automation batches receipts through the
+--     loan later.
 module Kyd.Event where
 
+import DA.Action (when)
 import DA.List (unique)
 
 import Kyd.Cash
+import Kyd.Settlement
 import Kyd.Ticket
-import Kyd.Tix
 
--- | A seating tier and its pricing policy.
+-- | A seating tier's policy on the master contract.
 data Tier = Tier
   with
     tierId : Text          -- e.g. "GA", "VIP"
     basePrice : Decimal
-    demandBps : Int        -- price rises by this many bps of base per ticket sold
+    demandBps : Int        -- next allocation priced up by this many bps of base per ticket already allocated
     resaleCapBps : Int     -- ticket resale cap = purchase price x this / 10000
     supply : Int
-    issued : Int
+    allocated : Int        -- carved into allocations so far
   deriving (Eq, Show)
 
--- | Current price of the next ticket in a tier: a linear demand curve over
---   tickets already sold. Deterministic and auditable — no oracle needed.
-tierPrice : Tier -> Decimal
-tierPrice t = t.basePrice * (1.0 + intToDecimal (t.issued * t.demandBps) / 10000.0)
+-- | Price of the NEXT allocation of a tier: a step-function demand curve over
+--   cumulative allocation. Deterministic and auditable — no oracle needed.
+tierPriceAt : Tier -> Decimal
+tierPriceAt t = t.basePrice * (1.0 + intToDecimal (t.allocated * t.demandBps) / 10000.0)
 
 validTier : Tier -> Bool
-validTier t = t.supply > 0 && t.issued >= 0 && t.issued <= t.supply
+validTier t = t.supply > 0 && t.allocated >= 0 && t.allocated <= t.supply
   && t.basePrice >= 0.0 && t.demandBps >= 0 && t.resaleCapBps >= 10000
 
--- | Mint the next ticket from a tier at its current dynamic price. The ticket
---   inherits its resale cap from the price actually paid. Returns the updated
---   tier list, the ticket, and the price charged.
-mintTicket : Event -> Party -> Text -> Update ([Tier], ContractId Ticket, Decimal)
-mintTicket ev fan tierId =
-  case filter (\t -> t.tierId == tierId) ev.tiers of
-    [tier] -> do
-      assertMsg "tier is sold out" (tier.issued < tier.supply)
-      let price = tierPrice tier
-          serial = sum (map (\t -> t.issued) ev.tiers) + 1
-      ticketCid <- create Ticket with
-        operator = ev.operator
-        venue = ev.venue
-        artist = ev.artist
-        owner = fan
-        eventId = ev.eventId
-        tierId
-        serial
-        facePrice = price
-        maxResalePrice = price * intToDecimal tier.resaleCapBps / 10000.0
-        royaltyBps = ev.royaltyBps
-        redeemed = False
-      let newTiers = map (\t -> if t.tierId == tierId then t with issued = t.issued + 1 else t) ev.tiers
-      pure (newTiers, ticketCid, price)
-    _ -> abort ("unknown tier: " <> tierId)
+-- | Mint the next ticket from an allocation. The ticket inherits its resale
+--   cap from the price actually paid; serials are disjoint by construction
+--   (each shard owns the range [serialBase .. serialBase+size-1]). Returns
+--   None for the shard when it is exhausted (archived, nothing recreated).
+mintFromAllocation : TierAllocation -> Party -> Update (Optional (ContractId TierAllocation), ContractId Ticket)
+mintFromAllocation a fan = do
+  assertMsg "allocation is sold out" (a.sold < a.size)
+  ticketCid <- create Ticket with
+    operator = a.operator
+    venue = a.venue
+    artist = a.artist
+    owner = fan
+    eventId = a.eventId
+    tierId = a.tierId
+    serial = a.serialBase + a.sold
+    facePrice = a.price
+    maxResalePrice = a.price * intToDecimal a.resaleCapBps / 10000.0
+    royaltyBps = a.royaltyBps
+    redeemed = False
+  next <-
+    if a.sold + 1 == a.size
+      then pure None
+      else Some <$> create a with sold = a.sold + 1
+  pure (next, ticketCid)
 
+-- | The cold master: tier policies and the allocation authority. Its key is
+--   safe because this contract is OFF the sales hot path — it is touched only
+--   for admin operations (opening allocations, repricing tiers).
 template Event
   with
     operator : Party
@@ -67,10 +85,12 @@ template Event
     name : Text
     eventTime : Time
     royaltyBps : Int
+    financingShareBps : Int   -- share of each paid sale carved out for financing (0 = none)
     tiers : [Tier]
   where
     signatory operator, venue, artist
     ensure royaltyBps >= 0 && royaltyBps < 10000
+        && financingShareBps >= 0 && financingShareBps <= 10000
         && not (null tiers)
         && unique (map (\t -> t.tierId) tiers)
         && all validTier tiers
@@ -78,46 +98,40 @@ template Event
     key (operator, eventId) : (Party, Text)
     maintainer key._1
 
-    -- | Unpaid issuance (comps, door sales settled off-ledger): mint the next
-    --   ticket of a tier to a fan. Consuming + recreate keeps the per-tier
-    --   issued-count authoritative and prevents oversell under concurrency.
-    choice Event_Issue : (ContractId Event, ContractId Ticket)
+    -- | Carve a block of a tier's inventory into a hot shard, priced at the
+    --   tier's current step on the demand curve. Open several shards per
+    --   level to multiply parallel sales streams.
+    choice Event_OpenAllocation : (ContractId Event, ContractId TierAllocation)
       with
-        fan : Party
         tierId : Text
+        size : Int
       controller venue
       do
-        (newTiers, ticketCid, _) <- mintTicket this fan tierId
-        eventCid <- create this with tiers = newTiers
-        pure (eventCid, ticketCid)
+        case filter (\t -> t.tierId == tierId) tiers of
+          [tier] -> do
+            assertMsg "size must be positive" (size > 0)
+            assertMsg "allocation exceeds the tier's remaining supply"
+              (tier.allocated + size <= tier.supply)
+            allocCid <- create TierAllocation with
+              operator
+              venue
+              artist
+              eventId
+              tierId
+              price = tierPriceAt tier
+              resaleCapBps = tier.resaleCapBps
+              royaltyBps
+              financingShareBps
+              serialBase = tier.allocated + 1
+              size
+              sold = 0
+            eventCid <- create this with
+              tiers = map (\t -> if t.tierId == tierId then t with allocated = t.allocated + size else t) tiers
+            pure (eventCid, allocCid)
+          _ -> abort ("unknown tier: " <> tierId)
 
-    -- | Paid primary sale, driven by the operator's sales engine. The payment
-    --   (already with the venue) must equal the tier's current dynamic price,
-    --   and if a TIX loan is active against this event, the lenders' revenue
-    --   share is carved out in the same transaction — the venue cannot receive
-    --   primary revenue without the loan being serviced.
-    choice Event_IssuePaid : (ContractId Event, ContractId Ticket)
-      with
-        fan : Party
-        tierId : Text
-        paymentCid : ContractId Cash
-      controller operator
-      do
-        payment <- fetch paymentCid
-        assertMsg "payment must already be with the venue" (payment.owner == venue)
-        (newTiers, ticketCid, price) <- mintTicket this fan tierId
-        assertMsg "payment must equal the tier's current price" (payment.amount == price)
-        mLoan <- lookupByKey @SyndicatedLoan (operator, eventId)
-        case mLoan of
-          Some loanCid -> do
-            _ <- exercise loanCid (Loan_SettleRevenue with revenueCid = paymentCid)
-            pure ()
-          None -> pure ()
-        eventCid <- create this with tiers = newTiers
-        pure (eventCid, ticketCid)
-
-    -- | Manual dynamic pricing: the venue or the artist adjusts a tier's base
-    --   price in response to demand (the escalator then applies on top).
+    -- | Manual dynamic pricing at the policy level: venue or artist moves a
+    --   tier's base price; future allocations price off the new base.
     choice Event_SetTierBasePrice : ContractId Event
       with
         repricer : Party
@@ -132,11 +146,84 @@ template Event
         create this with
           tiers = map (\t -> if t.tierId == tierId then t with basePrice = newBasePrice else t) tiers
 
+-- | The hot shard: a disjoint, fixed-price block of one tier's inventory.
+--   Deliberately key-less and loan-free so concurrent sales only ever contend
+--   within their own shard.
+template TierAllocation
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    eventId : Text
+    tierId : Text
+    price : Decimal
+    resaleCapBps : Int
+    royaltyBps : Int
+    financingShareBps : Int
+    serialBase : Int
+    size : Int
+    sold : Int
+  where
+    signatory operator, venue
+    observer artist
+    ensure price >= 0.0 && size > 0 && sold >= 0 && sold <= size
+        && resaleCapBps >= 10000 && royaltyBps >= 0 && royaltyBps < 10000
+        && financingShareBps >= 0 && financingShareBps <= 10000
+        && serialBase > 0
+
+    -- | Unpaid issuance (comps, door sales settled off-ledger).
+    choice Allocation_Issue : (Optional (ContractId TierAllocation), ContractId Ticket)
+      with fan : Party
+      controller venue
+      do mintFromAllocation this fan
+
+    -- | Paid primary sale, driven by the operator's sales engine. The payment
+    --   (already with the venue) must equal the shard's price; the financing
+    --   share is carved into an escrowed receipt — NOT settled through the
+    --   loan here — so sales never contend on the facility.
+    choice Allocation_IssuePaid : (Optional (ContractId TierAllocation), ContractId Ticket)
+      with
+        fan : Party
+        paymentCid : ContractId Cash
+      controller operator
+      do
+        payment <- fetch paymentCid
+        assertMsg "payment must already be with the venue" (payment.owner == venue)
+        assertMsg "payment must equal the allocation price" (payment.amount == price)
+        let share = price * intToDecimal financingShareBps / 10000.0
+        when (share > 0.0) $ do
+          shareSlice <-
+            if share < price
+              then do
+                (_venueKeeps, slice) <- exercise paymentCid (Cash_Split with splitAmount = share)
+                pure slice
+              else pure paymentCid
+          disclosed <- exercise shareSlice (Cash_Disclose with parties = [venue])
+          escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
+          _ <- create RevenueShare with operator, venue, eventId, amount = share, escrow
+          pure ()
+        mintFromAllocation this fan
+
+    -- | Manual dynamic pricing at the shard level: venue or artist reprices
+    --   the unsold remainder of this block.
+    choice Allocation_Reprice : ContractId TierAllocation
+      with
+        repricer : Party
+        newPrice : Decimal
+      controller repricer
+      do
+        assertMsg "only the venue or the artist may reprice"
+          (repricer == venue || repricer == artist)
+        assertMsg "price must be non-negative" (newPrice >= 0.0)
+        create this with price = newPrice
+
 -- | A fan's signed order to buy one ticket of a tier at its current price.
 --   The fan's signature carries the authority to move their cash; the
---   operator's fill executes payment, loan settlement and ticket issuance as
---   one atomic transaction. If demand moves the price between order and fill,
---   the fill fails rather than charging the fan a price they never agreed to.
+--   operator's fill targets a specific shard (chosen by the sales engine for
+--   load balancing) and executes payment, receipt carve-out and ticket
+--   issuance as one atomic transaction. No fetch-by-key anywhere on this
+--   path. If the shard's price differs from the cash committed, the fill
+--   fails rather than charging the fan a price they never agreed to.
 template PurchaseOrder
   with
     operator : Party
@@ -149,13 +236,16 @@ template PurchaseOrder
     signatory fan
     observer operator, venue
 
-    choice PurchaseOrder_Fill : (ContractId Event, ContractId Ticket)
+    choice PurchaseOrder_Fill : (Optional (ContractId TierAllocation), ContractId Ticket)
+      with allocationCid : ContractId TierAllocation
       controller operator
       do
-        (eventCid, ev) <- fetchByKey @Event (operator, eventId)
-        assertMsg "order names a different venue" (ev.venue == venue)
+        alloc <- fetch allocationCid
+        assertMsg "allocation does not match the order"
+          (alloc.operator == operator && alloc.venue == venue
+            && alloc.eventId == eventId && alloc.tierId == tierId)
         venueCash <- exercise cashCid (Cash_Transfer with newOwner = venue)
-        exercise eventCid (Event_IssuePaid with fan, tierId, paymentCid = venueCash)
+        exercise allocationCid (Allocation_IssuePaid with fan, paymentCid = venueCash)
 
     choice PurchaseOrder_Cancel : ()
       controller fan

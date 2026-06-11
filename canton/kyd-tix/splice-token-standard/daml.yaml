@@ -1,0 +1,9 @@
+sdk-version: 2.10.4
+name: splice-api-token-vendored
+version: 1.0.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+build-options:
+  - --target=1.17
