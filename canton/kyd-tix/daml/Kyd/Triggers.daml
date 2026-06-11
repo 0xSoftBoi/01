@@ -14,16 +14,17 @@ import DA.Foldable (forA_)
 import DA.Time (hours, minutes)
 import Daml.Trigger
 
+import Kyd.Cash
 import Kyd.Event
 import Kyd.Settlement
 import Kyd.Tix
 
 -- | The sales engine and shard load-balancer. For each fan 'PurchaseOrder',
---   pick a matching open 'TierAllocation' and fill against it. The fill is
---   atomic (payment → venue, financing share → escrowed receipt, ticket
---   minted) and self-guarding, so an order priced below the shard's price
---   simply fails ledger-side. In production this rule is where you spread
---   load across shards (e.g. hash the order id over the candidate list).
+--   pick an open 'TierAllocation' whose price matches the fan's committed
+--   payment (shards at different demand-curve steps coexist, so matching on
+--   tier alone could pair a 50 payment with a 55 shard and fail forever),
+--   then fill against it. The fill is atomic and self-guarding. In production
+--   this rule is also where you spread load across same-price shards.
 autoFillOrders : Trigger ()
 autoFillOrders = Trigger with
   initialize = pure ()
@@ -31,21 +32,27 @@ autoFillOrders = Trigger with
   registeredTemplates = RegisteredTemplates
     [ registeredTemplate @PurchaseOrder
     , registeredTemplate @TierAllocation
+    , registeredTemplate @Cash
     ]
   heartbeat = None
   rule = \operator -> do
     orders <- query @PurchaseOrder
     allocs <- query @TierAllocation
+    cashes <- query @Cash
     forA_ orders $ \(cid, order) ->
       when (order.operator == operator) $
-        case [ aCid | (aCid, a) <- allocs
-                    , a.operator == operator
-                    , a.venue == order.venue
-                    , a.eventId == order.eventId
-                    , a.tierId == order.tierId
-                    , a.sold < a.size ] of
-          (aCid :: _) -> dedupExercise cid (PurchaseOrder_Fill with allocationCid = aCid)
-          [] -> pure ()
+        case [ amt | (cashCid, cash) <- cashes, cashCid == order.cashCid, let amt = cash.amount ] of
+          [committed] ->
+            case [ aCid | (aCid, a) <- allocs
+                        , a.operator == operator
+                        , a.venue == order.venue
+                        , a.eventId == order.eventId
+                        , a.tierId == order.tierId
+                        , a.price == committed
+                        , a.sold < a.size ] of
+              (aCid :: _) -> dedupExercise cid (PurchaseOrder_Fill with allocationCid = aCid)
+              [] -> pure ()
+          _ -> pure ()
 
 -- | Batch revenue settlement: periodically sweep all pending 'RevenueShare'
 --   receipts of each facility through the loan in ONE consuming exercise —

@@ -1,0 +1,99 @@
+-- | One-shot demo seed for the UI: known party hints, two events with open
+--   shards, funded fans, an activated financing facility and the artist's
+--   royalty account. `integration/run-local.sh` runs this against the sandbox
+--   and writes the resulting party ids to `app/public/demo-parties.json`,
+--   which the web app reads to build its role switcher.
+module Kyd.Demo where
+
+import Daml.Script
+import DA.Date (date, Month(..))
+import DA.Time (time)
+
+import Kyd.Cash
+import Kyd.Event
+import Kyd.Roles
+import Kyd.Ticket
+import Kyd.Tix
+
+data DemoParties = DemoParties
+  with
+    operator : Party
+    venue : Party
+    artist : Party
+    alice : Party
+    bob : Party
+    lender : Party
+    lender2 : Party
+  deriving (Eq, Show)
+
+setup : Script DemoParties
+setup = do
+  operator <- allocatePartyWithHint "KYD-Operator" (PartyIdHint "KYD-Operator")
+  venue    <- allocatePartyWithHint "Brooklyn-Bowl" (PartyIdHint "Brooklyn-Bowl")
+  artist   <- allocatePartyWithHint "Robert-Plant" (PartyIdHint "Robert-Plant")
+  alice    <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
+  bob      <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+  lender   <- allocatePartyWithHint "Lender-A" (PartyIdHint "Lender-A")
+  lender2  <- allocatePartyWithHint "Lender-B" (PartyIdHint "Lender-B")
+
+  -- Onboarding + the artist's standing royalty-collection authority.
+  let onboard member role = do
+        inv <- submit operator $ createCmd Invitation with operator, invitee = member, role
+        submit member $ exerciseCmd inv Invitation_Accept
+  _ <- onboard venue Venue
+  _ <- onboard artist Artist
+  _ <- onboard lender Lender
+  _ <- onboard lender2 Lender
+  _ <- submitMulti [operator, artist] [] $ createCmd RoyaltyAccount with operator, artist
+
+  -- Event 1: financed show with a demand curve on GA.
+  ev1 <- submitMulti [operator, venue, artist] [] $ createCmd Event with
+    operator, venue, artist
+    eventId = "SHOW-001"
+    name = "Robert Plant — Live at Brooklyn Bowl"
+    eventTime = time (date 2026 Jul 4) 20 0 0
+    royaltyBps = 1000
+    financingShareBps = 5000
+    tiers =
+      [ Tier with tierId = "GA",  basePrice = 50.0,  demandBps = 200, resaleCapBps = 15000, supply = 200, allocated = 0
+      , Tier with tierId = "VIP", basePrice = 150.0, demandBps = 0,   resaleCapBps = 12000, supply = 20,  allocated = 0
+      ]
+
+  -- TIX raise against SHOW-001: 1,000 at 1.10x, repaid from 50% of sales.
+  off <- submitMulti [operator, venue] [] $ createCmd FinancingOffering with
+    operator, venue
+    eventId = "SHOW-001"
+    target = 1000.0
+    factorRateBps = 11000
+    revenueShareBps = 5000
+    dueDate = time (date 2026 Aug 1) 0 0 0
+    lateInterestBpsPerDay = 10
+    invited = [lender, lender2]
+    commitments = []
+  nA <- submit operator $ createCmd Cash with operator, owner = lender, amount = 600.0, observers = []
+  off2 <- submit lender $ exerciseCmd off (Offering_Commit with lender, cashCid = nA)
+  nB <- submit operator $ createCmd Cash with operator, owner = lender2, amount = 400.0, observers = []
+  off3 <- submit lender2 $ exerciseCmd off2 (Offering_Commit with lender = lender2, cashCid = nB)
+  _ <- submit venue $ exerciseCmd off3 Offering_Activate
+
+  -- Open the first sales shards (two GA shards for parallelism + one VIP).
+  (ev1b, _) <- submit venue $ exerciseCmd ev1 (Event_OpenAllocation with tierId = "GA", size = 5)
+  (ev1c, _) <- submit venue $ exerciseCmd ev1b (Event_OpenAllocation with tierId = "GA", size = 5)
+  _ <- submit venue $ exerciseCmd ev1c (Event_OpenAllocation with tierId = "VIP", size = 5)
+
+  -- Event 2: unfinanced show, flat pricing.
+  ev2 <- submitMulti [operator, venue, artist] [] $ createCmd Event with
+    operator, venue, artist
+    eventId = "SHOW-002"
+    name = "Late Night — Secret Set"
+    eventTime = time (date 2026 Sep 1) 23 0 0
+    royaltyBps = 1000
+    financingShareBps = 0
+    tiers = [Tier with tierId = "GA", basePrice = 25.0, demandBps = 0, resaleCapBps = 15000, supply = 100, allocated = 0]
+  _ <- submit venue $ exerciseCmd ev2 (Event_OpenAllocation with tierId = "GA", size = 10)
+
+  -- Fund the fans' app balances.
+  _ <- submit operator $ createCmd Cash with operator, owner = alice, amount = 500.0, observers = []
+  _ <- submit operator $ createCmd Cash with operator, owner = bob, amount = 500.0, observers = []
+
+  pure DemoParties with ..

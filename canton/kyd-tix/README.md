@@ -9,7 +9,7 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **24 scenarios** pass on Daml SDK
+It builds (LF 1.17, SCU-ready) and all **25 scenarios** pass on Daml SDK
 **2.10.4** — 15 functional, a 7-suite adversarial security harness
 ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)), and 2 suites driving DvP
 settlement through the **real CIP-56 token-standard interfaces** (see
@@ -25,9 +25,24 @@ live in [`integration/`](integration/).
 ```
 daml build --all   # builds the vendored CIP-56 interface package + kyd-tix
 daml test          # functional + adversarial + token-standard suites
-daml start          # boots a sandbox ledger + Navigator to click through it
-integration/run-local.sh   # sandbox + JSON API + operator triggers
+integration/run-local.sh        # sandbox + demo seed + JSON API + triggers
+cd app && npm run codegen && npm install && npm run dev   # the product UI
 ```
+
+## The product (`app/`)
+
+KYD's value-add is UX — fans never feel the blockchain — so the repo ships the
+product surface, not just the model: a React/TypeScript app (typed end-to-end
+via `daml codegen js`, production build verified) with a role switcher over
+one seeded world. Fans get one-tap buys (filled live by the price-aware
+operator trigger), QR passes, and capped resale with the limit surfaced in the
+form and enforced on the ledger; the venue gets a door scanner where
+double-check-in is impossible (consuming choice) and a dashboard with
+demand-curve inventory control, the TIX register and pending escrows; the
+artist watches royalties accrue from every resale. Architecture notes — why
+the catalog reads via the operator while every action signs as the fan, and
+why "no wallets" is the hosted-party model, not a hack — in
+[app/README.md](app/README.md).
 
 ---
 
