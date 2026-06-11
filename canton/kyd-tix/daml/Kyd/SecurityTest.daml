@@ -154,3 +154,32 @@ testRoleForgery = do
   -- offering escrow still cannot move it (tested via balance isolation).
   onboardBal <- cashOf c.alice
   onboardBal === 0.0
+
+-- 8. Gift + refund hardening: gifts need the owner's signature and the
+--    recipient's consent; refunds are venue-only, exact-amount, and
+--    impossible after redemption.
+testGiftAndRefundSecurity : Script ()
+testGiftAndRefundSecurity = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 2
+  (Some alloc2, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  -- Only the owner can gift; self-gifts are rejected.
+  submitMustFail c.bob $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.alice)
+  -- Only the named recipient can accept.
+  gift <- submit c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
+  submitMustFail c.lender $ exerciseCmd gift GiftOffer_Accept
+  t1b <- submit c.alice $ exerciseCmd gift GiftOffer_Withdraw
+  -- Refunds: the fan cannot self-refund; the amount must be exact; a
+  -- redeemed ticket cannot be refunded.
+  nWrong <- mint c c.venue 40.0
+  submitMustFail c.venue $ exerciseCmd t1b (Ticket_Refund with cashCid = nWrong)
+  nAlice <- mint c c.alice 50.0
+  submitMustFail c.alice $ exerciseCmd t1b (Ticket_Refund with cashCid = nAlice)
+  (None, t2) <- submit c.venue $ exerciseCmd alloc2 (Allocation_Issue with fan = c.bob)
+  t2r <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
+  nOk <- mint c c.venue 50.0
+  submitMustFail c.venue $ exerciseCmd t2r (Ticket_Refund with cashCid = nOk)
+  -- A redeemed ticket cannot be gifted either.
+  submitMustFail c.bob $ exerciseCmd t2r (Ticket_OfferGift with recipient = c.alice)

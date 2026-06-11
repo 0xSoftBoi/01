@@ -9,24 +9,29 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **25 scenarios** pass on Daml SDK
-**2.10.4** — 15 functional, a 7-suite adversarial security harness
-([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)), and 2 suites driving DvP
-settlement through the **real CIP-56 token-standard interfaces** (see
-[ecosystem integration](#ecosystem-integration-cip-56) below) — all
-warning-free. The model is engineered for Canton's contention semantics — see
-[Canton engineering](#canton-engineering) below. The security review lives in
-[AUDIT.md](AUDIT.md); the production network plan (validator operation,
-Featured App status, Canton Coin incentives) in
-[validator/](validator/README.md). Operator
+It builds (LF 1.17, SCU-ready) and all **28 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), an 8-suite
+adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
+and 2 suites driving DvP settlement through the **real CIP-56 token-standard
+interfaces** (see [ecosystem integration](#ecosystem-integration-cip-56)
+below) — all warning-free, in CI on every push
+([workflow](../../.github/workflows/kyd-tix.yml)). The model is engineered for
+Canton's contention semantics — see [Canton engineering](#canton-engineering)
+below. The security review lives in [AUDIT.md](AUDIT.md); the production
+network plan in [validator/](validator/README.md) with an operational
+[RUNBOOK](validator/RUNBOOK.md); a native **SwiftUI fan app** lives in
+[ios/KYDFan](ios/KYDFan/README.md); and [HANDOFF.md](HANDOFF.md) maps what is
+verified, what is scaffolded, and the production gaps in priority order.
+Operator
 automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-daml build --all   # builds the vendored CIP-56 interface package + kyd-tix
-daml test          # functional + adversarial + token-standard suites
-integration/run-local.sh        # sandbox + demo seed + JSON API + triggers
-cd app && npm run codegen && npm install && npm run dev   # the product UI
+make test     # both Daml packages + all 28 scenarios
+make app      # typed bindings + web app production build
+make demo     # sandbox + demo seed + JSON API + triggers
+cd app && npm run dev           # the product UI (PWA-installable)
+ios/KYDFan                       # native SwiftUI fan app (see its README)
 ```
 
 ## The product (`app/`)

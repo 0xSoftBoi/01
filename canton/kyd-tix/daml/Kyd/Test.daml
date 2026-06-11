@@ -561,3 +561,38 @@ testOpenOrderBook = do
   venueBal === 1000.0
   Some loanData <- queryContractId c.operator loan
   loanData.tranches === [Tranche c.lender2 440.0, Tranche c.lender 660.0]
+
+-- 15. Gifting: free transfer with the recipient's consent; the ticket is
+--     locked while the offer is open; decline hands it back.
+testGiftFlow : Script ()
+testGiftFlow = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 1
+  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  gift <- submit c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
+  -- Locked: the archived ticket cannot also be listed for sale.
+  submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
+  t2 <- submit c.bob $ exerciseCmd gift GiftOffer_Accept
+  Some t2Data <- queryContractId c.operator t2
+  t2Data.owner === c.bob
+  -- Bob regifts back; Alice declines; Bob keeps it.
+  gift2 <- submit c.bob $ exerciseCmd t2 (Ticket_OfferGift with recipient = c.alice)
+  t3 <- submit c.alice $ exerciseCmd gift2 GiftOffer_Decline
+  Some t3Data <- queryContractId c.operator t3
+  t3Data.owner === c.bob
+
+-- 16. Refunds: the venue makes the fan whole at exactly the price paid and
+--     the ticket is withdrawn atomically.
+testRefund : Script ()
+testRefund = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 1
+  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  n50 <- mint c c.venue 50.0
+  _ <- submit c.venue $ exerciseCmd t1 (Ticket_Refund with cashCid = n50)
+  aliceBal <- cashOf c.alice
+  aliceBal === 50.0
+  tickets <- query @Ticket c.alice
+  length tickets === 0

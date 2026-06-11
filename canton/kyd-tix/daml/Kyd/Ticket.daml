@@ -56,6 +56,30 @@ template Ticket
         assertMsg "buyer must differ from the current owner" (buyer /= owner)
         create ResaleOffer with ticket = this, buyer, salePrice
 
+    -- | Gift the ticket to a friend — no payment, propose/accept so the
+    --   recipient consents. (Economic note: gifts move tickets without an
+    --   on-ledger payment, so no royalty applies; see AUDIT.md KYD-07.)
+    choice Ticket_OfferGift : ContractId GiftOffer
+      with recipient : Party
+      controller owner
+      do
+        assertMsg "redeemed tickets cannot be gifted" (not redeemed)
+        assertMsg "recipient must differ from the current owner" (recipient /= owner)
+        create GiftOffer with ticket = this, recipient
+
+    -- | Venue makes the fan whole at exactly the price paid (show cancelled,
+    --   goodwill, ADA reseating, ...). Consuming: the ticket is withdrawn in
+    --   the same transaction the refund lands.
+    choice Ticket_Refund : ContractId Cash
+      with cashCid : ContractId Cash
+      controller venue
+      do
+        assertMsg "redeemed tickets cannot be refunded" (not redeemed)
+        cash <- fetch cashCid
+        assertMsg "refund must come from the venue's own cash" (cash.owner == venue)
+        assertMsg "refund must equal the price the fan paid" (cash.amount == facePrice)
+        exercise cashCid (Cash_Transfer with newOwner = owner)
+
     -- | List for CIP-56 settlement instead: the buyer pays in any Canton
     --   Network token-standard asset (Canton Coin, USDCx, ...) via standard
     --   Allocations. Same anti-scalping guards as 'Ticket_Offer'.
@@ -116,6 +140,28 @@ template ResaleOffer
       do create ticket
 
     choice ResaleOffer_Withdraw : ContractId Ticket
+      controller ticket.owner
+      do create ticket
+
+-- | A pending gift. Same lock-by-archiving as resale: the ticket cannot be
+--   gifted and sold simultaneously.
+template GiftOffer
+  with
+    ticket : Ticket
+    recipient : Party
+  where
+    signatory ticket.operator, ticket.venue, ticket.owner
+    observer recipient, ticket.artist
+
+    choice GiftOffer_Accept : ContractId Ticket
+      controller recipient
+      do create ticket with owner = recipient
+
+    choice GiftOffer_Decline : ContractId Ticket
+      controller recipient
+      do create ticket
+
+    choice GiftOffer_Withdraw : ContractId Ticket
       controller ticket.owner
       do create ticket
 

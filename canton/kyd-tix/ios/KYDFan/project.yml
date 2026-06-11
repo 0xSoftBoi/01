@@ -1,0 +1,26 @@
+# XcodeGen spec — `brew install xcodegen && xcodegen` in this directory
+# produces KYDFan.xcodeproj. (Or create an empty iOS App project in Xcode and
+# drag Sources/ in; there are no external dependencies.)
+name: KYDFan
+options:
+  bundleIdPrefix: com.kydlabs.demo
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  KYDFan:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.kydlabs.demo.fan
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen: {}
+        # Dev only: the local stack speaks plain HTTP. Remove for production
+        # (TLS in front of the JSON API) before any TestFlight/App Store build.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true

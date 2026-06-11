@@ -1,0 +1,72 @@
+name: kyd-tix
+
+on:
+  push:
+    paths: ["canton/kyd-tix/**", ".github/workflows/kyd-tix.yml"]
+  pull_request:
+    paths: ["canton/kyd-tix/**", ".github/workflows/kyd-tix.yml"]
+
+env:
+  DAML_VERSION: 2.10.4
+
+jobs:
+  daml:
+    name: Daml build + full test suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: canton/kyd-tix
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Daml SDK
+        id: daml-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.daml
+          key: daml-sdk-${{ env.DAML_VERSION }}
+      - name: Install Daml SDK
+        if: steps.daml-cache.outputs.cache-hit != 'true'
+        run: curl -sSL https://get.daml.com/ | sh -s $DAML_VERSION
+      - name: Build (both packages)
+        run: |
+          export PATH="$HOME/.daml/bin:$PATH"
+          daml build --all
+      - name: Test (functional + adversarial + token standard)
+        run: |
+          export PATH="$HOME/.daml/bin:$PATH"
+          daml test
+      - name: Upload DAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyd-tix-dar
+          path: canton/kyd-tix/.daml/dist/kyd-tix-0.1.0.dar
+
+  webapp:
+    name: Web app type-check + production build
+    runs-on: ubuntu-latest
+    needs: daml
+    defaults:
+      run:
+        working-directory: canton/kyd-tix
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cache Daml SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.daml
+          key: daml-sdk-${{ env.DAML_VERSION }}
+      - name: Install Daml SDK (cache miss fallback)
+        run: |
+          [ -x "$HOME/.daml/bin/daml" ] || curl -sSL https://get.daml.com/ | sh -s $DAML_VERSION
+      - name: Build DAR + generate bindings
+        run: |
+          export PATH="$HOME/.daml/bin:$PATH"
+          daml build --all
+          cd app && npm run codegen
+      - name: npm install + build
+        run: |
+          export PATH="$HOME/.daml/bin:$PATH"
+          cd app && npm install --no-audit --no-fund && npm run build

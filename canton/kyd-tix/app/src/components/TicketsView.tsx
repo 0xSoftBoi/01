@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type Ledger from "@daml/ledger";
-import { Ticket, ResaleOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
+import { Ticket, ResaleOffer, GiftOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
 import { Event, PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
 import { useToast } from "../Toast";
@@ -21,6 +21,7 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
   const events = useQuery(catalog, Event);
   const tickets = useQuery(fanLedger, Ticket);
   const offers = useQuery(fanLedger, ResaleOffer);
+  const gifts = useQuery(fanLedger, GiftOffer);
   const pending = usePendingOrders(fanLedger, fan);
   const toast = useToast();
   const [selling, setSelling] = useState<string | null>(null);
@@ -33,6 +34,8 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
   const mine = tickets.contracts.filter((t) => t.payload.owner === fan);
   const incoming = offers.contracts.filter((o) => o.payload.buyer === fan);
   const outgoing = offers.contracts.filter((o) => o.payload.ticket.owner === fan);
+  const incomingGifts = gifts.contracts.filter((g) => g.payload.recipient === fan);
+  const outgoingGifts = gifts.contracts.filter((g) => g.payload.ticket.owner === fan);
 
   const listForResale = async (ticketCid: string) => {
     try {
@@ -45,6 +48,18 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
       setPrice("");
     } catch {
       toast("err", "Couldn't send the offer");
+    }
+  };
+
+  const sendGift = async (ticketCid: string) => {
+    try {
+      await fanLedger.exercise(Ticket.Ticket_OfferGift, ticketCid as never, {
+        recipient: buyerParty,
+      });
+      toast("ok", "Gift sent — they just have to accept it");
+      setSelling(null);
+    } catch {
+      toast("err", "Couldn't send the gift");
     }
   };
 
@@ -63,7 +78,8 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
     }
   };
 
-  const empty = mine.length === 0 && incoming.length === 0 && pending.length === 0;
+  const empty =
+    mine.length === 0 && incoming.length === 0 && pending.length === 0 && incomingGifts.length === 0;
 
   return (
     <div className="stack">
@@ -88,6 +104,41 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
                   className="ghost"
                   onClick={() =>
                     fanLedger.exercise(ResaleOffer.ResaleOffer_Reject, o.contractId as never, {})
+                  }
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {incomingGifts.length > 0 && (
+        <div className="card glow">
+          <h3>🎁 Sent to you</h3>
+          {incomingGifts.map((g) => (
+            <div className="level" key={g.contractId}>
+              <div>
+                <strong>{eventName(g.payload.ticket.eventId)}</strong>
+                <div className="muted small">
+                  {g.payload.ticket.tierId} #{g.payload.ticket.serial} · a gift from{" "}
+                  {shortParty(g.payload.ticket.owner)}
+                </div>
+              </div>
+              <div className="row">
+                <button
+                  onClick={async () => {
+                    await fanLedger.exercise(GiftOffer.GiftOffer_Accept, g.contractId as never, {});
+                    toast("ok", "Added to your passes");
+                  }}
+                >
+                  Accept
+                </button>
+                <button
+                  className="ghost"
+                  onClick={() =>
+                    fanLedger.exercise(GiftOffer.GiftOffer_Decline, g.contractId as never, {})
                   }
                 >
                   Decline
@@ -182,6 +233,9 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
                       >
                         Send
                       </button>
+                      <button className="ghost" onClick={() => sendGift(t.contractId)}>
+                        Gift free
+                      </button>
                       <button className="ghost" onClick={() => setSelling(null)}>
                         ✕
                       </button>
@@ -197,9 +251,28 @@ export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Prop
         })}
       </div>
 
-      {outgoing.length > 0 && (
+      {(outgoing.length > 0 || outgoingGifts.length > 0) && (
         <div className="card">
           <h3>Your open offers</h3>
+          {outgoingGifts.map((g) => (
+            <div className="level" key={g.contractId}>
+              <div>
+                <strong>{eventName(g.payload.ticket.eventId)}</strong>
+                <span className="muted small">
+                  {" "}
+                  #{g.payload.ticket.serial} · gift to {shortParty(g.payload.recipient)}
+                </span>
+              </div>
+              <button
+                className="ghost"
+                onClick={() =>
+                  fanLedger.exercise(GiftOffer.GiftOffer_Withdraw, g.contractId as never, {})
+                }
+              >
+                Withdraw
+              </button>
+            </div>
+          ))}
           {outgoing.map((o) => (
             <div className="level" key={o.contractId}>
               <div>

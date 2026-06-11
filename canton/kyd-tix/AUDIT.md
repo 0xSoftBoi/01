@@ -3,9 +3,9 @@
 Self-audit of the Daml model in `daml/`, written against the authorization,
 privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
-(7 attack suites) or the functional suite in `daml/Kyd/Test.daml`
-(15 scenarios). The full suite runs warning-free: divulgence-free by
-construction, not by suppression.
+(8 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
+The full suite runs warning-free: divulgence-free by construction, not by
+suppression.
 
 ## Trust model
 
@@ -78,6 +78,17 @@ incompatible with pruning). All escrow visibility is now explicit via the
 `Cash.observers` disclosure list; the suite runs with zero divulgence
 warnings.
 
+### KYD-07 — Gifts carry no royalty (INFO, accepted)
+
+`Ticket_OfferGift` moves a ticket with no on-ledger payment, so no royalty or
+cap applies — the classic "gift + off-ledger side-payment" resale loophole.
+Accepted deliberately: gifting is a core fan behavior, and blocking it costs
+more than the leak (side-payments also evade *any* on-chain rule). Mitigation
+belongs in the app layer (rate limits, identity, gift-graph anomaly
+detection), where KYD already operates. The consent flow (propose/accept) and
+redeemed-ticket guard are enforced on-ledger.
+Verified by `testGiftFlow` and `testGiftAndRefundSecurity`.
+
 ## Attack coverage (`daml/Kyd/SecurityTest.daml`)
 
 | Suite | Attacks proven impossible |
@@ -89,6 +100,7 @@ warnings.
 | `testForeignReceiptRejected` | Sweeping one event's receipts through another event's loan |
 | `testResaleSecurity` | Double-listing a ticket; third party accepting an offer; paying with another's note or short amount; non-venue check-in; double check-in |
 | `testRoleForgery` | Self-issued memberships; accepting another party's invitation |
+| `testGiftAndRefundSecurity` | Non-owner gifting; self-gifts; third-party gift acceptance; fan self-refunds; wrong-amount refunds; refunding/gifting redeemed tickets |
 
 ## Residual assumptions
 
