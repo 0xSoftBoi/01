@@ -1,8 +1,8 @@
 // Ledger access layer. The UX premise (KYD's actual value-add) is that fans
 // never see crypto mechanics: parties are hosted on the operator's validator,
 // "logging in" is picking an identity (in production: phone/email + JWT from
-// the auth provider), money is a balance, buying is one tap. Everything in
-// this file exists to keep that abstraction airtight in the components.
+// the auth provider), money is a balance with a card on-ramp, buying is one
+// tap. Everything in this file exists to keep that abstraction airtight.
 import { useEffect, useMemo, useState } from "react";
 import Ledger from "@daml/ledger";
 import type { ContractId, Template } from "@daml/types";
@@ -24,20 +24,16 @@ export interface DemoParties {
 
 export type RoleKey = "alice" | "bob" | "venue" | "artist";
 
-export const ROLES: { key: RoleKey; label: string; kind: "fan" | "venue" | "artist" }[] = [
-  { key: "alice", label: "Alice (fan)", kind: "fan" },
-  { key: "bob", label: "Bob (fan)", kind: "fan" },
-  { key: "venue", label: "Brooklyn Bowl (venue)", kind: "venue" },
-  { key: "artist", label: "Robert Plant (artist)", kind: "artist" },
+export const ROLES: { key: RoleKey; label: string; short: string; kind: "fan" | "venue" | "artist" }[] = [
+  { key: "alice", label: "Alice — fan", short: "A", kind: "fan" },
+  { key: "bob", label: "Bob — fan", short: "B", kind: "fan" },
+  { key: "venue", label: "Brooklyn Bowl — venue", short: "BB", kind: "venue" },
+  { key: "artist", label: "Robert Plant — artist", short: "RP", kind: "artist" },
 ];
 
 export async function loadDemoParties(): Promise<DemoParties> {
   const res = await fetch("/demo-parties.json");
-  if (!res.ok) {
-    throw new Error(
-      "demo-parties.json not found - start the stack with integration/run-local.sh first",
-    );
-  }
+  if (!res.ok) throw new Error("stack-not-running");
   return (await res.json()) as DemoParties;
 }
 
@@ -67,8 +63,8 @@ export function ledgerFor(party: string): Ledger {
 }
 
 // ---------------------------------------------------------------------------
-// Polling query hook (2s): simple, robust, and good enough for a demo UI.
-// (Production would use the JSON API's WebSocket streaming endpoints.)
+// Polling query hook. 800ms keeps the buy -> pass -> door loop feeling live
+// (production swaps this for the JSON API's WebSocket streams).
 
 export interface QueryResult<T extends object> {
   contracts: { contractId: string; payload: T }[];
@@ -78,7 +74,6 @@ export interface QueryResult<T extends object> {
 export function useQuery<T extends object, K>(
   ledger: Ledger,
   template: Template<T, K, string>,
-  refreshKey = 0,
 ): QueryResult<T> {
   const [contracts, setContracts] = useState<{ contractId: string; payload: T }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,23 +93,22 @@ export function useQuery<T extends object, K>(
       }
     };
     fetchOnce();
-    const t = setInterval(fetchOnce, 2000);
+    const t = setInterval(fetchOnce, 800);
     return () => {
       live = false;
       clearInterval(t);
     };
-  }, [ledger, template, refreshKey]);
+  }, [ledger, template]);
   return { contracts, loading };
 }
 
 // ---------------------------------------------------------------------------
-// Money helpers. Daml Decimals arrive as strings; the fan just sees dollars.
+// Money. Daml Decimals arrive as strings; the fan just sees dollars.
 
 export function fmtMoney(amount: string | number): string {
   return `$${Number(amount).toFixed(2)}`;
 }
 
-// Party ids look like "Alice::1220abcd…"; humans see the hint.
 export function shortParty(party: string): string {
   return party.split("::")[0];
 }
@@ -130,9 +124,27 @@ export function useBalance(ledger: Ledger, party: string): number {
   );
 }
 
-// Find (or carve) a note of exactly `amount` from the party's balance.
-// This is the "wallet plumbing" a fan never sees: pick a note >= amount,
-// split off the exact slice if needed.
+// The fan's open orders = passes still materializing.
+export function usePendingOrders(ledger: Ledger, fan: string) {
+  const { contracts } = useQuery(ledger, PurchaseOrder);
+  return contracts.filter((c) => c.payload.fan === fan);
+}
+
+// Simulated card on-ramp. In production the payment provider's webhook mints
+// the app balance server-side after the card clears; the demo performs that
+// operator-side mint directly so the wallet flow is tangible.
+export async function topUp(parties: DemoParties, fan: string, amount: number): Promise<void> {
+  const operatorLedger = ledgerFor(parties.operator);
+  await operatorLedger.create(Cash, {
+    operator: parties.operator,
+    owner: fan,
+    amount: amount.toFixed(10),
+    observers: [],
+  });
+}
+
+// Find (or carve) a note of exactly `amount` from the party's balance —
+// wallet plumbing a fan never sees.
 export async function exactNote(
   ledger: Ledger,
   party: string,
@@ -145,17 +157,36 @@ export async function exactNote(
   const exact = mine.find((c) => Number(c.payload.amount) === amount);
   if (exact) return exact.contractId;
   const big = mine.find((c) => Number(c.payload.amount) > amount);
-  if (!big) throw new Error("Insufficient balance");
+  if (!big) {
+    // Consolidate: several smaller notes may cover it.
+    const total = mine.reduce((acc, c) => acc + Number(c.payload.amount), 0);
+    if (total < amount) throw new Error("INSUFFICIENT_FUNDS");
+    let [head, ...rest] = mine;
+    let headCid = head.contractId;
+    let headAmt = Number(head.payload.amount);
+    for (const note of rest) {
+      if (headAmt >= amount) break;
+      const [merged] = await ledger.exercise(Cash.Cash_Merge, headCid, {
+        otherCid: note.contractId,
+      });
+      headCid = merged as ContractId<Cash>;
+      headAmt += Number(note.payload.amount);
+    }
+    if (headAmt === amount) return headCid;
+    const [result] = await ledger.exercise(Cash.Cash_Split, headCid, {
+      splitAmount: amount.toFixed(10),
+    });
+    return (result as { _1: ContractId<Cash>; _2: ContractId<Cash> })._2;
+  }
   const [result] = await ledger.exercise(Cash.Cash_Split, big.contractId, {
     splitAmount: amount.toFixed(10),
   });
-  // Cash_Split returns (kept, slice); the slice is the exact amount.
   return (result as { _1: ContractId<Cash>; _2: ContractId<Cash> })._2;
 }
 
-// One-tap purchase: carve the exact payment and sign a purchase order.
-// The operator's autoFillOrders trigger does the rest; the ticket appears in
-// "My Tickets" when the atomic fill commits.
+// One-tap purchase: carve the exact payment and sign a purchase order. The
+// operator's autoFillOrders trigger does the rest; the pass materializes in
+// My Tickets when the atomic fill commits.
 export async function placeOrder(
   ledger: Ledger,
   parties: DemoParties,
@@ -173,4 +204,11 @@ export async function placeOrder(
     tierId,
     cashCid,
   });
+}
+
+// Deterministic cover art: event id -> a stable gradient hue pair.
+export function coverHues(seed: string): [number, number] {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+  return [h, (h + 50) % 360];
 }

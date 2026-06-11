@@ -38,7 +38,7 @@ export default function DoorView({ venueLedger }: { venueLedger: Ledger }) {
               <span className="muted"> · {shortParty(t.payload.owner)}</span>
             </div>
             {t.payload.redeemed ? (
-              <span className="badge">CHECKED IN</span>
+              <span className="badge in">CHECKED IN</span>
             ) : (
               <button
                 onClick={() =>

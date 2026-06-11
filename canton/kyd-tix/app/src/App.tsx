@@ -6,14 +6,15 @@ import {
   fmtMoney,
   ledgerFor,
   loadDemoParties,
-  shortParty,
   useBalance,
 } from "./api";
+import { ToastProvider } from "./Toast";
 import EventsView from "./components/EventsView";
 import TicketsView from "./components/TicketsView";
 import DoorView from "./components/DoorView";
 import VenueView from "./components/VenueView";
 import ArtistView from "./components/ArtistView";
+import WalletSheet from "./components/WalletSheet";
 
 type Tab = "discover" | "tickets" | "door" | "dashboard" | "royalties";
 
@@ -42,103 +43,164 @@ function partyFor(parties: DemoParties, role: RoleKey): string {
   }
 }
 
-function FanBalance({ party }: { party: string }) {
+function Boot({ error }: { error: boolean }) {
+  return (
+    <div className="boot">
+      <div className="boot-card">
+        <div className="brand xl">
+          KYD<span className="dot">.</span>
+        </div>
+        {error ? (
+          <>
+            <p>The local stack isn't running yet.</p>
+            <pre>
+              integration/run-local.sh{"\n"}cd app && npm run dev
+            </pre>
+          </>
+        ) : (
+          <p className="muted">Connecting…</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FanShell({
+  parties,
+  role,
+  party,
+  tab,
+  setTab,
+}: {
+  parties: DemoParties;
+  role: RoleKey;
+  party: string;
+  tab: Tab;
+  setTab: (t: Tab) => void;
+}) {
   const ledger = useMemo(() => ledgerFor(party), [party]);
+  const catalog = useMemo(() => ledgerFor(parties.operator), [parties]);
   const balance = useBalance(ledger, party);
-  return <span className="chip">{fmtMoney(balance)}</span>;
+  const [walletOpen, setWalletOpen] = useState(false);
+
+  const otherFans = ROLES.filter((r) => r.kind === "fan" && r.key !== role).map((r) => ({
+    party: partyFor(parties, r.key),
+    label: r.label.split(" — ")[0],
+  }));
+
+  return (
+    <>
+      <button className="wallet-chip" onClick={() => setWalletOpen(true)}>
+        {fmtMoney(balance)} <span className="plus">＋</span>
+      </button>
+      {walletOpen && (
+        <WalletSheet
+          parties={parties}
+          fan={party}
+          balance={balance}
+          onClose={() => setWalletOpen(false)}
+        />
+      )}
+      <main>
+        {tab === "discover" && (
+          <EventsView
+            catalog={catalog}
+            fanLedger={ledger}
+            fan={party}
+            parties={parties}
+            balance={balance}
+            onNeedFunds={() => setWalletOpen(true)}
+            onPurchased={() => setTab("tickets")}
+          />
+        )}
+        {tab === "tickets" && (
+          <TicketsView catalog={catalog} fanLedger={ledger} fan={party} otherFans={otherFans} />
+        )}
+      </main>
+    </>
+  );
 }
 
 export default function App() {
   const [parties, setParties] = useState<DemoParties | null>(null);
-  const [bootError, setBootError] = useState<string | null>(null);
+  const [bootError, setBootError] = useState(false);
   const [role, setRole] = useState<RoleKey>("alice");
   const [tab, setTab] = useState<Tab>("discover");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
-    loadDemoParties().then(setParties).catch((e) => setBootError(String(e)));
+    loadDemoParties()
+      .then(setParties)
+      .catch(() => setBootError(true));
   }, []);
 
   const roleInfo = ROLES.find((r) => r.key === role)!;
   const party = parties ? partyFor(parties, role) : "";
+  // Memoized: a fresh Ledger each render would re-subscribe every poll hook.
   const ledger = useMemo(() => (party ? ledgerFor(party) : null), [party]);
-  const catalog = useMemo(
-    () => (parties ? ledgerFor(parties.operator) : null),
-    [parties],
-  );
+
+  if (!parties || !ledger) return <Boot error={bootError} />;
 
   const switchRole = (r: RoleKey) => {
     setRole(r);
-    const kind = ROLES.find((x) => x.key === r)!.kind;
-    setTab(TABS[kind][0].key);
+    setMenuOpen(false);
+    setTab(TABS[ROLES.find((x) => x.key === r)!.kind][0].key);
   };
 
-  if (bootError)
-    return (
-      <div className="boot">
-        <h1>KYD</h1>
-        <p className="banner error">{bootError}</p>
-      </div>
-    );
-  if (!parties || !ledger || !catalog) return <div className="boot">Connecting…</div>;
-
-  const otherFans = ROLES.filter((r) => r.kind === "fan" && r.key !== role).map((r) => ({
-    party: partyFor(parties, r.key),
-    label: r.label,
-  }));
-
   return (
-    <div className="shell">
-      <header>
-        <div className="brand">
-          KYD<span className="dot">.</span>
-          <span className="sub">on Canton</span>
-        </div>
-        <div className="role-bar">
-          {ROLES.map((r) => (
-            <button
-              key={r.key}
-              className={`pill ${r.key === role ? "active" : ""}`}
-              onClick={() => switchRole(r.key)}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <div className="me">
-          {roleInfo.kind === "fan" && <FanBalance party={party} />}
-          <span className="muted">{shortParty(party)}</span>
-        </div>
-      </header>
+    <ToastProvider>
+      <div className="shell">
+        <header>
+          <div className="brand">
+            KYD<span className="dot">.</span>
+          </div>
+          <nav className="tabs">
+            {TABS[roleInfo.kind].map((t) => (
+              <button
+                key={t.key}
+                className={`tab ${tab === t.key ? "active" : ""}`}
+                onClick={() => setTab(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+          <div className="header-right">
+            {roleInfo.kind === "fan" ? null : (
+              <span className="muted small">{roleInfo.label}</span>
+            )}
+            <div className="avatar-wrap">
+              <button className="avatar" onClick={() => setMenuOpen((o) => !o)}>
+                {roleInfo.short}
+              </button>
+              {menuOpen && (
+                <div className="menu" onMouseLeave={() => setMenuOpen(false)}>
+                  <div className="menu-label">Demo — switch identity</div>
+                  {ROLES.map((r) => (
+                    <button
+                      key={r.key}
+                      className={`menu-item ${r.key === role ? "active" : ""}`}
+                      onClick={() => switchRole(r.key)}
+                    >
+                      <span className="avatar sm">{r.short}</span> {r.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
 
-      <nav>
-        {TABS[roleInfo.kind].map((t) => (
-          <button
-            key={t.key}
-            className={`tab ${tab === t.key ? "active" : ""}`}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      <main>
-        {tab === "discover" && (
-          <EventsView catalog={catalog} fanLedger={ledger} fan={party} parties={parties} />
+        {roleInfo.kind === "fan" ? (
+          <FanShell parties={parties} role={role} party={party} tab={tab} setTab={setTab} />
+        ) : (
+          <main>
+            {tab === "door" && <DoorView venueLedger={ledger} />}
+            {tab === "dashboard" && <VenueView venueLedger={ledger} venue={party} />}
+            {tab === "royalties" && <ArtistView artistLedger={ledger} artist={party} />}
+          </main>
         )}
-        {tab === "tickets" && (
-          <TicketsView fanLedger={ledger} fan={party} otherFans={otherFans} />
-        )}
-        {tab === "door" && <DoorView venueLedger={ledger} />}
-        {tab === "dashboard" && <VenueView venueLedger={ledger} venue={party} />}
-        {tab === "royalties" && <ArtistView artistLedger={ledger} artist={party} />}
-      </main>
-
-      <footer className="muted">
-        Every action above is a Daml command under the selected party's own authority; fills,
-        sweeps and accrual are the operator's triggers. No wallets, no gas, no seed phrases —
-        the ledger is the backend.
-      </footer>
-    </div>
+      </div>
+    </ToastProvider>
   );
 }
