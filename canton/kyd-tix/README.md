@@ -9,21 +9,23 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **22 scenarios** pass on Daml SDK
-**2.10.4** — 15 functional plus a 7-suite adversarial security harness
-([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)), warning-free. The model is
-engineered for Canton's contention semantics — see
+It builds (LF 1.17, SCU-ready) and all **24 scenarios** pass on Daml SDK
+**2.10.4** — 15 functional, a 7-suite adversarial security harness
+([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)), and 2 suites driving DvP
+settlement through the **real CIP-56 token-standard interfaces** (see
+[ecosystem integration](#ecosystem-integration-cip-56) below) — all
+warning-free. The model is engineered for Canton's contention semantics — see
 [Canton engineering](#canton-engineering) below. The security review lives in
 [AUDIT.md](AUDIT.md); the production network plan (validator operation,
-Featured App status, Canton Coin incentives, CIP-56) in
+Featured App status, Canton Coin incentives) in
 [validator/](validator/README.md). Operator
 automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-daml build      # compiles to .daml/dist/kyd-tix-0.1.0.dar
-daml test       # runs the Daml Script suite in Kyd/Test.daml
-daml start       # boots a sandbox ledger + Navigator to click through it
+daml build --all   # builds the vendored CIP-56 interface package + kyd-tix
+daml test          # functional + adversarial + token-standard suites
+daml start          # boots a sandbox ledger + Navigator to click through it
 integration/run-local.sh   # sandbox + JSON API + operator triggers
 ```
 
@@ -103,9 +105,11 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | Module | Templates | Solana equivalent |
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
-| `Kyd.Cash` | `Cash` | USDC SPL token (here: operator IOU, for atomic settlement + escrow disclosure) |
+| `Kyd.Cash` | `Cash` (implements CIP-56 `Holding`) | USDC SPL token (here: operator IOU, wallet-visible via the token standard) |
 | `Kyd.Event` | `Event` (cold master), `TierAllocation` (hot shards), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
-| `Kyd.Ticket` | `Ticket`, `ResaleOffer` | The TICKS asset + marketplace listing |
+| `Kyd.Ticket` | `Ticket`, `ResaleOffer`, `DvPResaleOffer`, `RoyaltyAccount` | The TICKS asset + two settlement rails (cash, CIP-56 allocations) |
+| `Kyd.MockRegistry` | `MockAllocation` (implements CIP-56 `Allocation`) | Reference registry so tests drive the standard interface end-to-end |
+| `splice-token-standard/` | vendored `Splice.Api.Token.{MetadataV1,HoldingV1,AllocationV1}` | The CIP-56 interfaces (separate package, as SCU requires) |
 | `Kyd.Settlement` | `RevenueShare` | Escrowed financing carve-outs (contention decoupling) |
 | `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, batch sweep, tranche secondary market |
 | `Kyd.Triggers` | `autoFillOrders`, `sweepRevenue`, `accrueLateInterest` | Operator automation (off-ledger Daml Triggers) — see `integration/` |
@@ -272,6 +276,12 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 14. `testReceiptRefund` — with no facility owed, operator+venue jointly refund
     an escrowed share to the venue
 
+**Token-standard suite** (`Kyd.TokenTest`): `testCip56DvPResale` — full DvP
+through the real `Allocation` interface (two legs + ticket, one transaction);
+`testCip56LegValidation` — short legs, foreign settlement references,
+third-party-funded legs and missing royalty legs all rejected; withdrawn
+allocations refund through the registry.
+
 **Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
 fail): forged cash issuance and theft, overdrafts, authority abuse on
 issuance/repricing/fills, unilateral escrow refunds, register tampering by the
@@ -292,6 +302,46 @@ in [AUDIT.md](AUDIT.md).
   (`@kyd/kyd-tix-0.1.0`) for the web app; `integration/client/` shows a fan
   buying a ticket over HTTP; `integration/run-local.sh` boots the full stack.
 
+## Ecosystem integration (CIP-56)
+
+**Why this integration and not another:** the highest-volume Canton activity
+(e.g. [Broadridge DLR's ~$8T/month repo flows](https://messari.io/report/understanding-canton-network-a-comprehensive-overview))
+runs on *private* synchronizers — not integrable. The highest-usage
+*integrable* surfaces on the Global Synchronizer are **Canton Coin** (the
+network's native payment app, with network activity of
+[600k–1M+ daily transactions](https://coinstats.app/ai/a/investment-analysis-canton-network))
+and **[USDCx](https://www.canton.network/blog/usdcx-now-live-on-canton-unlocking-private-and-composable-usdc-backed-settlement)**
+(Circle xReserve-backed, already used in live on-chain repo settlement, with
+[BitGo qualified custody](https://www.bitgo.com/resources/blog/bitgo-extends-canton-support-to-the-cip-56-token-standard/)).
+Both — and every other major Canton asset — speak the
+**[CIP-56 token standard](https://www.canton.network/blog/what-is-cip-56-a-guide-to-cantons-token-standard)**.
+So the one integration that composes with all of them is the standard itself:
+
+- **`Kyd.Cash` implements the `Holding` interface** — every CIP-56 wallet
+  (Loop, Canton Coin wallets) discovers and displays TIX balances via an
+  `InterfaceFilter` on `Splice.Api.Token.HoldingV1:Holding`, no
+  KYD-specific wallet code.
+- **Ticket resale settles via the `Allocation` API** (`Ticket_OfferDvP` →
+  `DvPResaleOffer`): the buyer's wallet allocates two standard transfer legs
+  (seller proceeds + artist royalty) in **any CIP-56 asset — Canton Coin,
+  USDCx, cBTC — and settlement executes both allocations and the ticket
+  transfer in one atomic transaction.** The settlement code speaks only the
+  interface, so no code changes per asset.
+- **The royalty leg is the subtle part**: executing an allocation requires the
+  *receiver's* authority, and the artist doesn't sign resale offers. The
+  artist's standing `RoyaltyAccount` (signed once at onboarding) lends that
+  authority to settlements through its choice — a worked example of Daml's
+  authority-propagation rules.
+- The interfaces are **vendored unmodified** from
+  [hyperledger-labs/splice](https://github.com/hyperledger-labs/splice)
+  (Apache-2.0) as a **separate package** — the SCU checker itself enforces
+  that interfaces and implementations must not share a package. On-network
+  deployments swap the vendored DAR for the official `splice-api-token-*-v1`
+  releases (one `daml.yaml` line) so package ids match what Canton Coin and
+  USDCx implement. `Kyd.MockRegistry` is the reference `Allocation`
+  implementation that lets `daml test` drive the whole rail through the
+  standard interface.
+
 ## Canton Network deployment (`validator/`)
 
 [validator/README.md](validator/README.md) is the production plan: running the
@@ -305,7 +355,9 @@ custodied holdings/allocations (retiring audit finding KYD-02).
 
 ## Not in scope (next steps)
 
-- Vendoring the splice DARs to emit `FeaturedAppActivityMarker`s from the
-  trigger submissions (deployment wiring; mapped in `validator/README.md`).
-- The CIP-56 holding/allocation swap for `Kyd.Cash` (seams documented).
+- Vendoring the splice amulet DARs to emit `FeaturedAppActivityMarker`s from
+  the trigger submissions (deployment wiring; mapped in `validator/README.md`).
+- Extending the CIP-56 allocation rail from resale to the financing escrows
+  (commitments and revenue shares as locked holdings — retires audit KYD-02
+  fully; the resale rail already demonstrates the pattern).
 - Tiered seating maps / seat-level inventory (today tiers are fungible pools).

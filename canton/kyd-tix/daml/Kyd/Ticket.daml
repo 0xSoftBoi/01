@@ -5,6 +5,12 @@
 --   sees their own tickets, never another buyer's.
 module Kyd.Ticket where
 
+import DA.Action (when)
+
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.MetadataV1 (ExtraArgs)
+
 import Kyd.Cash
 
 template Ticket
@@ -50,6 +56,28 @@ template Ticket
         assertMsg "buyer must differ from the current owner" (buyer /= owner)
         create ResaleOffer with ticket = this, buyer, salePrice
 
+    -- | List for CIP-56 settlement instead: the buyer pays in any Canton
+    --   Network token-standard asset (Canton Coin, USDCx, ...) via standard
+    --   Allocations. Same anti-scalping guards as 'Ticket_Offer'.
+    choice Ticket_OfferDvP : ContractId DvPResaleOffer
+      with
+        buyer : Party
+        salePrice : Decimal
+        paymentInstrument : InstrumentId
+        settlementRef : Text
+      controller owner
+      do
+        assertMsg "redeemed tickets cannot be resold" (not redeemed)
+        assertMsg "resale price exceeds the anti-scalping cap"
+          (salePrice <= maxResalePrice)
+        assertMsg "buyer must differ from the current owner" (buyer /= owner)
+        create DvPResaleOffer with
+          ticket = this
+          buyer
+          salePrice
+          paymentInstrument
+          settlementRef
+
 -- | A pending resale. Holds the locked ticket until the buyer settles or it is
 --   withdrawn / rejected, in which case the ticket is handed back to the seller.
 template ResaleOffer
@@ -88,5 +116,108 @@ template ResaleOffer
       do create ticket
 
     choice ResaleOffer_Withdraw : ContractId Ticket
+      controller ticket.owner
+      do create ticket
+
+-- | CIP-56 settlement rail. The offer above settles in Kyd.Cash; this rail
+--   settles in ANY Canton Network token-standard asset (Canton Coin, USDCx,
+--   cBTC, ...) by executing standard Allocations — the token standard's
+--   delivery-vs-payment primitive — atomically with the ticket transfer.
+
+-- | The artist's standing authority for collecting royalty legs. Executing an
+--   Allocation requires the RECEIVER's authority, and the artist is not a
+--   signatory of resale offers — so the artist pre-authorizes collection once,
+--   here, and the settlement borrows that authority through this contract's
+--   choice (authority flows from a contract's signatories into the body of
+--   its choices, and no further).
+template RoyaltyAccount
+  with
+    operator : Party
+    artist : Party
+  where
+    signatory operator, artist
+
+    nonconsuming choice RoyaltyAccount_CollectLeg : Allocation_ExecuteTransferResult
+      with
+        legCid : ContractId Allocation
+        payer : Party
+        extraArgs : ExtraArgs
+      controller operator, payer
+      do
+        leg <- view <$> fetch legCid
+        assertMsg "royalty leg must pay this artist"
+          (leg.allocation.transferLeg.receiver == artist)
+        exercise legCid (Allocation_ExecuteTransfer with extraArgs)
+
+-- | Validate one allocation leg against what the offer expects.
+validateDvPLeg : AllocationView -> Party -> Text -> InstrumentId -> Party -> Party -> Decimal -> Update ()
+validateDvPLeg leg executor ref instrument sender receiver amount = do
+  assertMsg "leg names a different settlement executor"
+    (leg.allocation.settlement.executor == executor)
+  assertMsg "leg references a different settlement"
+    (leg.allocation.settlement.settlementRef.id == ref)
+  assertMsg "leg is in a different instrument"
+    (leg.allocation.transferLeg.instrumentId == instrument)
+  assertMsg "leg has the wrong sender"
+    (leg.allocation.transferLeg.sender == sender)
+  assertMsg "leg has the wrong receiver"
+    (leg.allocation.transferLeg.receiver == receiver)
+  assertMsg "leg has the wrong amount"
+    (leg.allocation.transferLeg.amount == amount)
+
+-- | A pending CIP-56 resale: the ticket is locked (by archiving) while the
+--   buyer's wallet allocates the payment legs in their asset of choice.
+--   Settlement executes seller + royalty legs and transfers the ticket in one
+--   atomic transaction; the anti-scalping cap was enforced at listing.
+template DvPResaleOffer
+  with
+    ticket : Ticket
+    buyer : Party
+    salePrice : Decimal
+    paymentInstrument : InstrumentId
+    settlementRef : Text
+  where
+    signatory ticket.operator, ticket.venue, ticket.owner
+    observer buyer, ticket.artist
+
+    -- | Joint controllers: trades clear through the platform — the operator's
+    --   read access is also what lets the settlement reference the artist's
+    --   RoyaltyAccount and the buyer's allocations.
+    choice DvPResale_Settle : ContractId Ticket
+      with
+        sellerLegCid : ContractId Allocation
+        royaltyLegCid : Optional (ContractId Allocation)
+        royaltyAccountCid : Optional (ContractId RoyaltyAccount)
+        extraArgs : ExtraArgs
+      controller buyer, ticket.operator
+      do
+        let royalty = salePrice * intToDecimal ticket.royaltyBps / 10000.0
+            sellerAmount = salePrice - royalty
+        sellerLeg <- view <$> fetch sellerLegCid
+        validateDvPLeg sellerLeg ticket.operator settlementRef paymentInstrument
+          buyer ticket.owner sellerAmount
+        _ <- exercise sellerLegCid (Allocation_ExecuteTransfer with extraArgs)
+        when (royalty > 0.0) $
+          case (royaltyLegCid, royaltyAccountCid) of
+            (Some legCid, Some accountCid) -> do
+              leg <- view <$> fetch legCid
+              validateDvPLeg leg ticket.operator settlementRef paymentInstrument
+                buyer ticket.artist royalty
+              account <- fetch accountCid
+              assertMsg "royalty account belongs to a different artist or operator"
+                (account.operator == ticket.operator && account.artist == ticket.artist)
+              _ <- exercise accountCid RoyaltyAccount_CollectLeg with
+                legCid
+                payer = buyer
+                extraArgs
+              pure ()
+            _ -> abort "a royalty leg and the artist's royalty account are required"
+        create ticket with owner = buyer
+
+    choice DvPResale_Reject : ContractId Ticket
+      controller buyer
+      do create ticket
+
+    choice DvPResale_Withdraw : ContractId Ticket
       controller ticket.owner
       do create ticket

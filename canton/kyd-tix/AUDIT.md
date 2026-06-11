@@ -42,6 +42,11 @@ as **locked holdings**, moving custody from the app operator to the
 instrument's own registry (see `validator/README.md`).
 Partially verified by `testReceiptCustody` (no party other than the operator
 can release; refund requires operator AND venue).
+**Mitigation progress:** the resale rail already settles via CIP-56
+`Allocation`s (`Kyd.Ticket:DvPResaleOffer`, tested through the standard
+interface in `Kyd.TokenTest`), where escrow custody sits with the asset's own
+registry, not the app operator. Extending the same rail to financing
+commitments and revenue-share escrows retires this finding fully.
 
 ### KYD-03 — Batch settlement delays lender receipt (LOW, by design)
 

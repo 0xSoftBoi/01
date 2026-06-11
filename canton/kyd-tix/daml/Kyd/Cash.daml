@@ -5,6 +5,14 @@
 --   liability of the operator so that settlement is atomic with ticket transfer.
 module Kyd.Cash where
 
+import Splice.Api.Token.HoldingV1
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+
+-- | The instrument identifier under which Kyd.Cash presents itself to the
+--   CIP-56 ecosystem (registry admin = the issuing operator).
+kydInstrumentId : Party -> InstrumentId
+kydInstrumentId operator = InstrumentId with admin = operator, id = "KYD-USD"
+
 template Cash
   with
     operator : Party
@@ -15,6 +23,17 @@ template Cash
     signatory operator
     observer (owner :: observers)
     ensure amount > 0.0
+
+    -- CIP-56: present this note as a standard Holding, so any token-standard
+    -- wallet (Loop, Canton Coin wallets, ...) can discover and display TIX
+    -- balances via an InterfaceFilter on Splice.Api.Token.HoldingV1:Holding.
+    interface instance Holding for Cash where
+      view = HoldingView with
+        owner
+        instrumentId = kydInstrumentId operator
+        amount
+        lock = None
+        meta = emptyMetadata
 
     -- | Hand the full balance to a new holder. Disclosure persists across the
     --   transfer (escrow flows rely on this); the new owner can reset it.

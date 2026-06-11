@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DAR=.daml/dist/kyd-tix-0.1.0.dar
-daml build
+daml build --all
 
 # 1. Sandbox ledger on :6865, preloaded with the DAR.
 daml sandbox --dar "$DAR" --port 6865 &

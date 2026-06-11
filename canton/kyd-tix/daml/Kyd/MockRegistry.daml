@@ -1,0 +1,62 @@
+-- | A reference implementation of the CIP-56 'Allocation' interface, backed by
+--   'Kyd.Cash'. This is what lets the test suite drive the DvP settlement rail
+--   end-to-end THROUGH the standard interface rather than against a concrete
+--   asset: on the Canton Network the very same 'Kyd.Ticket' settlement code
+--   executes against Canton Coin's or USDCx's Allocation implementations,
+--   because it only ever speaks 'Splice.Api.Token.AllocationV1'.
+module Kyd.MockRegistry where
+
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.HoldingV1 (Holding)
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+
+import Kyd.Cash
+
+-- | A funded allocation: the sender's cash is escrowed with the registry admin
+--   at creation; executing pays the receiver, withdrawing/cancelling refunds
+--   the sender. Signed by sender (who funds) and the instrument admin (who
+--   operates the registry).
+template MockAllocation
+  with
+    spec : AllocationSpecification
+    escrow : ContractId Cash   -- owned by the instrument admin until execution
+  where
+    signatory spec.transferLeg.instrumentId.admin, spec.transferLeg.sender
+    observer spec.transferLeg.receiver, spec.settlement.executor
+
+    interface instance Allocation for MockAllocation where
+      view = AllocationView with
+        allocation = spec
+        holdingCids = [toInterfaceContractId @Holding escrow]
+        meta = emptyMetadata
+
+      allocation_executeTransferImpl _self _arg = do
+        now <- getTime
+        assertMsg "settlement deadline has passed"
+          (now < spec.settlement.settleBefore)
+        cash <- fetch escrow
+        assertMsg "escrow no longer matches the allocated amount"
+          (cash.amount == spec.transferLeg.amount)
+        paid <- exercise escrow (Cash_Transfer with newOwner = spec.transferLeg.receiver)
+        pure Allocation_ExecuteTransferResult with
+          senderHoldingCids = []
+          receiverHoldingCids = [toInterfaceContractId @Holding paid]
+          meta = emptyMetadata
+
+      allocation_withdrawImpl _self _arg = do
+        refunded <- refundEscrow this
+        pure Allocation_WithdrawResult with
+          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          meta = emptyMetadata
+
+      allocation_cancelImpl _self _arg = do
+        refunded <- refundEscrow this
+        pure Allocation_CancelResult with
+          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          meta = emptyMetadata
+
+-- | Return the escrowed cash to the sender (and clear its disclosure).
+refundEscrow : MockAllocation -> Update (ContractId Cash)
+refundEscrow a = do
+  refunded <- exercise a.escrow (Cash_Transfer with newOwner = a.spec.transferLeg.sender)
+  exercise refunded (Cash_Disclose with parties = [])
