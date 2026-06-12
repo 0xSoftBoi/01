@@ -1,6 +1,7 @@
 # index-fund — audit + a solvent rebuild
 
-The original `crypto_index_fund::index_fund` (in `../../contracts/`) is a Sui Move "crypto
+The original `crypto_index_fund::index_fund` ([`original_insolvent.move.txt`](original_insolvent.move.txt))
+is a Sui Move "crypto
 index fund": deposit SUI → mint an `IndexFundToken` recording a notional equal-weighted
 basket (BTC/ETH/XRP/ADA/MATIC via the Supra oracle); withdraw → burn it, get SUI back. It is
 **insolvent by construction**.

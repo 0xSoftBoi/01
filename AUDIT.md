@@ -1,4 +1,4 @@
-# Audit: `contracts/darthpepe.sol` (`DarkPepe`) is a honeypot template
+# Audit: `DarkPepe` ([`audit/src/DarkPepe.sol`](audit/src/DarkPepe.sol)) is a honeypot template
 
 `DarkPepe` (DEPE) is the widely-copied "memecoin with a blacklist" template. It compiles and
 trades, but the deployer keeps three levers that let them trap holders. Runnable proofs are

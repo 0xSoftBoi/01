@@ -63,13 +63,12 @@ accepted risks documented instead of hidden.
 
 ## Other audit work in this repo
 
-- **Sui Move** — insolvency audit of a crypto index fund (pro-rata accounting
-  flaw) plus a solvent, tested rebuild: [`AUDIT.md`](AUDIT.md),
-  [`contracts/`](contracts/), [`move/`](move/).
+- **Sui Move** — insolvency audit of a crypto index fund (a pool that pays out
+  a notional basket while only ever holding SUI) plus a solvent, tested
+  pro-rata rebuild: [`move/index-fund/`](move/index-fund/).
 - **Solidity** — honeypot taxonomy: line-by-line teardown of a trap-laden
-  memecoin template and a trap-free reference implementation:
-  [`contracts/darthpepe.sol`](contracts/darthpepe.sol), [`audit/`](audit/)
-  (Foundry workspace).
+  memecoin template with runnable Foundry proofs, alongside a trap-free
+  reference token: [`AUDIT.md`](AUDIT.md), [`audit/`](audit/) (`forge test`).
 
 ---
 
