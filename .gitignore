@@ -1,3 +1,18 @@
+# Foundry (audit/)
 audit/out/
 audit/cache/
 audit/lib/
+
+# Daml / web / iOS build outputs (canton/kyd-tix)
+**/.daml/
+**/dist/
+**/daml.js/
+**/node_modules/
+*.dar
+canton/kyd-tix/log/
+canton/kyd-tix/app/public/demo-parties.json
+canton/kyd-tix/ios/**/*.xcodeproj
+
+# Misc build artifacts / OS files
+artifacts/
+.DS_Store
