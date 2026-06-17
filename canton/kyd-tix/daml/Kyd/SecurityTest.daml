@@ -183,3 +183,31 @@ testGiftAndRefundSecurity = do
   submitMustFail c.venue $ exerciseCmd t2r (Ticket_Refund with cashCid = nOk)
   -- A redeemed ticket cannot be gifted either.
   submitMustFail c.bob $ exerciseCmd t2r (Ticket_OfferGift with recipient = c.alice)
+
+-- 9. Financing custody: a committed note is locked IN PLACE — still owned by
+--    the lender (custody never moves to the operator) but unspendable while the
+--    raise is pending, and excluded from spendable balance.
+testCommittedFundsLockedInPlace : Script ()
+testCommittedFundsLockedInPlace = do
+  c <- setupCast
+  _ <- makeEvent c
+  off <- submitMulti [c.operator, c.venue] [] $ createCmd FinancingOffering with
+    operator = c.operator
+    venue = c.venue
+    eventId = "SHOW-001"
+    target = 600.0
+    factorRateBps = 11000
+    revenueShareBps = 5000
+    dueDate = time (date 2026 Aug 1) 0 0 0
+    lateInterestBpsPerDay = 10
+    invited = [c.lender]
+    commitments = []
+  n <- mint c c.lender 600.0
+  _ <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n)
+  -- Custody stayed with the lender, but the funds are not spendable.
+  bal <- cashOf c.lender
+  bal === 0.0
+  [(lockedCid, locked)] <- query @Cash c.lender
+  locked.owner === c.lender   -- the lender still owns it
+  submitMustFail c.lender $ exerciseCmd lockedCid (Cash_Transfer with newOwner = c.bob)
+  submitMustFail c.lender $ exerciseCmd lockedCid (Cash_Split with splitAmount = 100.0)

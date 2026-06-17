@@ -159,7 +159,7 @@ Ticket.Ticket_CheckIn -> redeemed (resale now blocked)   (door scan)
 
 venue+operator: FinancingOffering (invited lenders)      (TIX: targeted raise)
               | OpenFinancingOffering (observer: public)  (TIX: open order book)
-Offering_Commit(cash) per lender --> escrow w/ operator  (lock-by-safekeeping)
+Offering_Commit(cash) per lender --> lock-in-place        (lender keeps custody)
   open book: any lender holding a Lender membership       (KYC gate, no invite)
              reads `public` to discover and commit
   Offering_Uncommit / Offering_Cancel --> refunds        (escape hatches)
@@ -179,8 +179,10 @@ TrancheOffer_Accept(cash) [buyer + operator]:            (atomic DvP, KYC-gated)
 
 The paid primary sale is the piece that makes TIX's *"ticket revenue
 automatically enforces repayment"* literal on Canton: at the moment of sale the
-lenders' share is carved into operator-held escrow, so the venue never touches
-it — and the sweep settles whole batches through the loan. The tranche market
+lenders' share is locked in place on the venue's own holding (the venue keeps
+custody but cannot spend it) — and the sweep settles whole batches through the
+loan. Commitments and revenue shares both use this lock-in-place model, so
+funds never sit in operator custody (audit KYD-02). The tranche market
 clears through the operator (joint controller), mirroring the agent-bank role
 in real syndications, and buyers must hold a `Lender` membership — an on-ledger
 KYC gate for the RWA story.
@@ -391,7 +393,6 @@ custodied holdings/allocations (retiring audit finding KYD-02).
 
 - Vendoring the splice amulet DARs to emit `FeaturedAppActivityMarker`s from
   the trigger submissions (deployment wiring; mapped in `validator/README.md`).
-- Extending the CIP-56 allocation rail from resale to the financing escrows
-  (commitments and revenue shares as locked holdings — retires audit KYD-02
-  fully; the resale rail already demonstrates the pattern).
+- Production swap of `Kyd.Cash` for Canton Coin / USDCx (a `Kyd.Registry`
+  dependency change — all settlement already speaks the CIP-56 interfaces).
 - Tiered seating maps / seat-level inventory (today tiers are fungible pools).
