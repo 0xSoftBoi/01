@@ -22,7 +22,7 @@ every push touching this tree.
 | Daml model (`daml/`) | 28 scenarios in CI: 17 functional + 8 adversarial attack suites + 2 CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
 | Web app (`app/`) | Type-check + production build in CI. The full runtime loop (JWT → catalog → split → order → trigger fill → pass; financing receipt escrowed) was driven over HTTP against the running stack during development. |
 | Triggers (`Kyd.Triggers`) | Compile into the DAR; listed by the runner; fills exercised end-to-end in the runtime loop above. |
-| CIP-56 integration | Tested against the real vendored interfaces via a mock registry. NOT yet run against live Canton Coin/USDCx allocations. |
+| CIP-56 integration | `Cash` implements `Holding`; `Kyd.Registry` implements the standard `TransferFactory`/`AllocationFactory`/`Allocation`. Resale + transfers tested through these real factories. NOT yet run against live Canton Coin/USDCx package ids (swap the vendored DAR for the official releases). |
 | iOS app (`ios/KYDFan`) | Source-complete, no dependencies, same API contract as the verified web app — but **not compiled** (no macOS CI leg). Expect a first-build pass on a Mac. |
 | Validator ops (`validator/`) | Documentation + runbook with sourced commands. No node was stood up from this repo. |
 
