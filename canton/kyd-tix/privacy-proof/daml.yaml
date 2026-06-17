@@ -1,0 +1,13 @@
+sdk-version: 2.10.4
+name: kyd-privacy-proof
+version: 0.1.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script-lts
+data-dependencies:
+  # the built model DAR (run `daml build --all` in the parent first)
+  - ../.daml/dist/kyd-tix-0.1.0.dar
+build-options:
+  - --target=1.17

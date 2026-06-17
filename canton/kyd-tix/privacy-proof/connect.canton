@@ -1,0 +1,5 @@
+// Bring the network up and connect both participants to the shared domain.
+nodes.local.start()
+p1.domains.connect_local(mydomain)
+p2.domains.connect_local(mydomain)
+println("CANTON_READY participants=" + participants.all.size + " connected p1=" + p1.domains.active("mydomain") + " p2=" + p2.domains.active("mydomain"))

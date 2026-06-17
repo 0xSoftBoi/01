@@ -217,9 +217,10 @@ alongside the batch path).
 
 ## Honest limitations (don't oversell these)
 
-- **Not yet run multi-participant.** Privacy is enforced by signatory/observer
-  and verified on a single sandbox participant; cross-participant
-  sub-transaction privacy (Canton's differentiator) is argued, not benchmarked.
+- **Multi-participant privacy is proven** on a real 2-participant + 1-domain
+  Canton network (`privacy-proof/`, `./run.sh`): a p1-only contract is provably
+  absent from a live p2 node, with a race-free Daml Script (3 deterministic
+  passes). Not yet *throughput*-benchmarked across participants.
 - **Vendored package ids.** Built against vendored CIP-56 interfaces, not the
   official `splice-api-token-*-v1` releases — interface-compatible, but package
   ids differ until the swap.

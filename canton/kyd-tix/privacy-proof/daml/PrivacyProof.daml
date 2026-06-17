@@ -1,0 +1,70 @@
+-- | Proves Canton's headline guarantee — participant-level sub-transaction
+--   privacy — on a REAL two-participant network (see canton.conf), not the
+--   in-memory test runner. Run via ./run.sh.
+--
+--   Operator and Alice are hosted on participant p1; Bob on a separate node,
+--   participant p2; both connected to one synchronization domain.
+--
+--   Every assertion is race-free (each query is local to the queried party's
+--   own participant), so the proof is deterministic despite cross-participant
+--   propagation being eventually consistent.
+module PrivacyProof where
+
+import Daml.Script
+import Kyd.Cash
+
+-- A trivial contract Bob can create on his own node, to prove p2 is a live
+-- participant (not merely blind/empty).
+template Ping
+  with
+    owner : Party
+  where
+    signatory owner
+
+privacyProof : Script ()
+privacyProof = do
+  let p1 = ParticipantName "p1"
+      p2 = ParticipantName "p2"
+
+  operator <- allocatePartyOn "KYD-Operator" p1
+  alice    <- allocatePartyOn "Alice" p1
+  bob      <- allocatePartyOn "Bob" p2
+
+  -- A holding whose only stakeholders (operator, alice) are on p1.
+  aliceCash <- submit operator $ createCmd Cash with
+    operator, owner = alice, amount = 100.0, lock = None, observers = []
+
+  -- Alice's node (p1) has it.
+  Some _ <- queryContractId alice aliceCash
+  aliceNotes <- query @Cash alice
+  assertMsg "p1 should hold Alice's note" (length aliceNotes == 1)
+
+  -- p2 is a LIVE participant: Bob transacts on his own node.
+  ping <- submit bob $ createCmd Ping with owner = bob
+  Some _ <- queryContractId bob ping
+
+  -- ...yet Bob's live node never received Alice's p1-only contract. THIS is
+  -- participant-level privacy: same global ledger, but p2's store lacks the
+  -- contract because no p2-hosted party is a stakeholder.
+  None <- queryContractId bob aliceCash
+  bobNotes <- query @Cash bob
+  assertMsg "p2 must not hold a contract it has no stake in" (null bobNotes)
+
+  -- Cross-participant transaction: operator (p1) issues to Bob (p2). The submit
+  -- COMMITTING proves p1 and p2 are distinct nodes connected via the shared
+  -- domain (p2 had to confirm/receive as the observer's participant).
+  bobCash <- submit operator $ createCmd Cash with
+    operator, owner = bob, amount = 50.0, lock = None, observers = []
+  Some bc <- queryContractId operator bobCash   -- operator-local read (p1), race-free
+  assertMsg "cross-participant create landed with Bob as owner" (bc.owner == bob)
+
+  -- Party-level privacy on the SAME participant: Alice, also on p1, is not a
+  -- stakeholder of Bob's holding, so even though it sits in p1's store she
+  -- cannot see it.
+  None <- queryContractId alice bobCash
+
+  debug "PRIVACY PROVEN on a real 2-participant Canton network:"
+  debug "  - p2 is a live participant (Bob transacts there) ..."
+  debug "  - ... yet it never received Alice's p1-only contract"
+  debug "  - cross-participant create commits; non-stakeholders (Alice) still can't see it"
+  pure ()

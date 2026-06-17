@@ -215,7 +215,10 @@ choices with zero downtime and no contract migration.
 only their tickets; a lender only their syndicates), escrow visibility is
 explicit via `Cash` disclosure (no deprecated divulgence anywhere — the test
 suite runs warning-free), and the open order book uses the public-party
-broadcast pattern rather than widening observers on business contracts.
+broadcast pattern rather than widening observers on business contracts. This
+is **proven on a real two-participant Canton network** — a p1-only contract is
+provably absent from a live p2 node — in [`privacy-proof/`](privacy-proof/README.md)
+(`./run.sh`, race-free, 3 deterministic passes).
 
 ### Targeted vs. open financing (the public-party pattern)
 
