@@ -49,14 +49,15 @@ onboard c member role = do
 -- Mint operator cash to a party.
 mint : Cast -> Party -> Decimal -> Script (ContractId Cash)
 mint c owner amount = submit c.operator $ createCmd Cash with
-  operator = c.operator, owner, amount, observers = []
+  operator = c.operator, owner, amount, lock = None, observers = []
 
--- Sum a party's cash balance (only notes it owns, not ones merely disclosed
--- to it, such as escrows it observes).
+-- Sum a party's spendable cash: notes it owns that are NOT locked (locked
+-- holdings are reserved in place by the registry for an in-flight allocation)
+-- and not merely disclosed to it.
 cashOf : Party -> Script Decimal
 cashOf p = do
   notes <- query @Cash p
-  pure (foldl (\acc (_, c) -> if c.owner == p then acc + c.amount else acc) 0.0 notes)
+  pure (foldl (\acc (_, c) -> if c.owner == p && c.lock == None then acc + c.amount else acc) 0.0 notes)
 
 -- A single-tier event master: GA at 50 with no demand escalator, a 1.5x
 -- resale cap (so 75 on a face-price purchase), a 10% artist royalty and a 50%

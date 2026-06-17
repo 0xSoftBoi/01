@@ -113,12 +113,14 @@ export function shortParty(party: string): string {
   return party.split("::")[0];
 }
 
+// Spendable balance: notes the party owns that are not locked (a locked note
+// is reserved in place by the registry for an in-flight allocation).
 export function useBalance(ledger: Ledger, party: string): number {
   const { contracts } = useQuery(ledger, Cash);
   return useMemo(
     () =>
       contracts
-        .filter((c) => c.payload.owner === party)
+        .filter((c) => c.payload.owner === party && c.payload.lock === null)
         .reduce((acc, c) => acc + Number(c.payload.amount), 0),
     [contracts, party],
   );
@@ -139,6 +141,7 @@ export async function topUp(parties: DemoParties, fan: string, amount: number): 
     operator: parties.operator,
     owner: fan,
     amount: amount.toFixed(10),
+    lock: null,
     observers: [],
   });
 }
@@ -152,7 +155,7 @@ export async function exactNote(
 ): Promise<ContractId<Cash>> {
   const notes = await ledger.query(Cash);
   const mine = notes
-    .filter((c) => c.payload.owner === party)
+    .filter((c) => c.payload.owner === party && c.payload.lock === null)
     .sort((a, b) => Number(a.payload.amount) - Number(b.payload.amount));
   const exact = mine.find((c) => Number(c.payload.amount) === amount);
   if (exact) return exact.contractId;

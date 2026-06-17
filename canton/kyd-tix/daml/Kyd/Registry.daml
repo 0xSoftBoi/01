@@ -14,7 +14,7 @@
 module Kyd.Registry where
 
 import Splice.Api.Token.MetadataV1 (emptyMetadata)
-import Splice.Api.Token.HoldingV1 (Holding)
+import Splice.Api.Token.HoldingV1
 import Splice.Api.Token.AllocationV1
 import Splice.Api.Token.AllocationInstructionV1
 import Splice.Api.Token.TransferInstructionV1
@@ -90,26 +90,31 @@ template KydAllocationFactory
             leg = spec.transferLeg
         assertMsg "wrong instrument" (leg.instrumentId == kydInstrumentId operator)
         (funded, change) <- consolidateToExact leg.amount (map (fromInterfaceContractId @Cash) arg.inputHoldingCids)
-        -- Escrow the funds in registry custody until the leg settles, disclosed
-        -- to sender and receiver so both are stakeholders of the escrow (no
-        -- reliance on divulgence).
-        escrow0 <- exercise funded (Cash_Transfer with newOwner = operator)
-        escrow <- exercise escrow0 (Cash_Disclose with parties = [leg.sender, leg.receiver])
-        allocCid <- create KydAllocation with operator, spec, escrow
+        -- Lock the funds IN PLACE: custody stays with the sender, the registry
+        -- (operator) holds the lock, and the receiver is disclosed so it can
+        -- track the locked holding. Same model as Canton Coin's Amulet.
+        disclosed <- exercise funded (Cash_Disclose with parties = [leg.receiver, spec.settlement.executor])
+        let registryLock = Lock with
+              holders = [operator]
+              expiresAt = Some spec.settlement.settleBefore
+              expiresAfter = None
+              context = Some ("KYD allocation: " <> spec.settlement.settlementRef.id)
+        locked <- exercise disclosed (Cash_Lock with newLock = registryLock)
+        allocCid <- create KydAllocation with operator, spec, locked
         pure AllocationInstructionResult with
           output = AllocationInstructionResult_Completed with
             allocationCid = toInterfaceContractId @Allocation allocCid
           senderChangeCids = map (toInterfaceContractId @Holding) change
           meta = emptyMetadata
 
--- | A funded allocation: escrowed Cash held by the registry until the
---   settlement executes (pays the receiver) or is cancelled/withdrawn
---   (refunds the sender).
+-- | A funded allocation: a holding locked in place by the registry (custody
+--   stays with the sender) until the settlement executes (unlock + pay the
+--   receiver) or is cancelled/withdrawn (unlock back to the sender).
 template KydAllocation
   with
     operator : Party
     spec : AllocationSpecification
-    escrow : ContractId Cash
+    locked : ContractId Cash
   where
     signatory operator, spec.transferLeg.sender
     observer spec.transferLeg.receiver, spec.settlement.executor
@@ -117,35 +122,33 @@ template KydAllocation
     interface instance Allocation for KydAllocation where
       view = AllocationView with
         allocation = spec
-        holdingCids = [toInterfaceContractId @Holding escrow]
+        holdingCids = [toInterfaceContractId @Holding locked]
         meta = emptyMetadata
 
       allocation_executeTransferImpl _self _arg = do
         now <- getTime
         assertMsg "settlement deadline has passed" (now < spec.settlement.settleBefore)
-        cash <- fetch escrow
-        assertMsg "escrow no longer matches the allocated amount"
+        cash <- fetch locked
+        assertMsg "locked holding no longer matches the allocated amount"
           (cash.amount == spec.transferLeg.amount)
-        paid <- exercise escrow (Cash_Transfer with newOwner = spec.transferLeg.receiver)
+        paid <- exercise locked (Cash_SettleLocked with newOwner = spec.transferLeg.receiver)
         pure Allocation_ExecuteTransferResult with
           senderHoldingCids = []
           receiverHoldingCids = [toInterfaceContractId @Holding paid]
           meta = emptyMetadata
 
       allocation_cancelImpl _self _arg = do
-        refunded <- refundEscrow this
+        released <- releaseLock this
         pure Allocation_CancelResult with
-          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          senderHoldingCids = [toInterfaceContractId @Holding released]
           meta = emptyMetadata
 
       allocation_withdrawImpl _self _arg = do
-        refunded <- refundEscrow this
+        released <- releaseLock this
         pure Allocation_WithdrawResult with
-          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          senderHoldingCids = [toInterfaceContractId @Holding released]
           meta = emptyMetadata
 
--- | Return escrowed funds to the sender (and clear their disclosure).
-refundEscrow : KydAllocation -> Update (ContractId Cash)
-refundEscrow a = do
-  refunded <- exercise a.escrow (Cash_Transfer with newOwner = a.spec.transferLeg.sender)
-  exercise refunded (Cash_Disclose with parties = [])
+-- | Release the lock, leaving the holding with its owner (the sender).
+releaseLock : KydAllocation -> Update (ContractId Cash)
+releaseLock a = exercise a.locked Cash_Unlock

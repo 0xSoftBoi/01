@@ -37,19 +37,20 @@ Pending revenue shares and financing commitments are held as operator-owned
 liability of the operator (the issuer), so escrow custody adds no risk class
 beyond the issuer risk every holder already bears; the signed receipt is the
 venue's and lenders' auditable claim. Production mitigation: replace
-`Kyd.Cash` with Canton Coin / CIP-56 token-standard holdings and hold escrows
-as **locked holdings**, moving custody from the app operator to the
-instrument's own registry (see `validator/README.md`).
+`Kyd.Cash` with Canton Coin / CIP-56 token-standard holdings, moving custody
+from the app operator to the instrument's own registry (see
+`validator/README.md`).
 Partially verified by `testReceiptCustody` (no party other than the operator
 can release; refund requires operator AND venue).
 **Mitigation progress:** the resale rail settles via the CIP-56 standard
 factories and `Allocation` interface — `Kyd.Registry` implements
-`TransferFactory`/`AllocationFactory`/`Allocation` over `Cash`
-(`Kyd.Ticket:DvPResaleOffer`, exercised through the real factories in
-`Kyd.TokenTest`). Swapping `Kyd.Registry` for the Canton Coin / USDCx registry
-(a dependency change, since the settlement code speaks only the interface)
-moves custody to the instrument's own registry and retires this finding for
-the resale path; extending the same factory call to the financing escrows
+`TransferFactory`/`AllocationFactory`/`Allocation` over `Cash`, and
+allocations now **lock the holding in place**: custody stays with the owner
+and the registry only holds a lock, so even the resale escrow is no longer an
+operator-custody transfer (`testCip56LockReservation`). Swapping `Kyd.Registry`
+for the Canton Coin / USDCx registry (a dependency change, since the settlement
+code speaks only the interface) retires this finding for the resale path;
+extending the same factory call to the financing escrows
 closes it fully.
 
 ### KYD-03 — Batch settlement delays lender receipt (LOW, by design)

@@ -185,3 +185,22 @@ testCip56Transfer = do
   bobBal   <- cashOf c.bob
   aliceBal === 60.0
   bobBal   === 40.0
+
+-- 4. Lock-in-place custody: an allocated holding stays OWNED by the sender but
+--    is locked — unspendable and excluded from spendable balance — until the
+--    allocation settles or is withdrawn (which releases it back, in place).
+testCip56LockReservation : Script ()
+testCip56LockReservation = do
+  c <- setupCast
+  factory <- allocationFactory c
+  leg <- allocateLeg c factory c.alice c.bob 100.0 "LOCK-1" "seller"
+  -- The funds are reserved in place: still Alice's, but not spendable.
+  aliceSpendable <- cashOf c.alice
+  aliceSpendable === 0.0
+  [(lockedCid, _)] <- query @Cash c.alice
+  submitMustFail c.alice $ exerciseCmd lockedCid (Cash_Transfer with newOwner = c.bob)
+  submitMustFail c.alice $ exerciseCmd lockedCid (Cash_Split with splitAmount = 40.0)
+  -- Withdrawing the allocation releases the lock back to Alice, in place.
+  _ <- submit c.alice $ exerciseCmd leg (Allocation_Withdraw with extraArgs = emptyExtra)
+  aliceAfter <- cashOf c.alice
+  aliceAfter === 100.0
