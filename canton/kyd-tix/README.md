@@ -12,7 +12,8 @@ things KYD actually runs today:
 It builds (LF 1.17, SCU-ready) and all **28 scenarios** pass on Daml SDK
 **2.10.4** — functional (incl. gifting and venue refunds), an 8-suite
 adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
-and 2 suites driving DvP settlement through the **real CIP-56 token-standard
+and 4 suites driving DvP settlement, free-of-payment transfer and lock-in-place
+custody through the **real CIP-56 token-standard
 interfaces** (see [ecosystem integration](#ecosystem-integration-cip-56)
 below) — all warning-free, in CI on every push
 ([workflow](../../.github/workflows/kyd-tix.yml)). The model is engineered for
@@ -125,7 +126,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | Module | Templates | Solana equivalent |
 | --- | --- | --- |
 | `Kyd.Roles` | `Invitation`, `Membership` | PDAs / signer allow-lists |
-| `Kyd.Cash` | `Cash` (implements CIP-56 `Holding`) | USDC SPL token (here: operator IOU, wallet-visible via the token standard) |
+| `Kyd.Cash` | `Cash` (CIP-56 `Holding` + locks) | USDC SPL token (here: operator IOU, wallet-visible via the token standard) |
 | `Kyd.Event` | `Event` (cold master), `TierAllocation` (hot shards), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer`, `DvPResaleOffer`, `RoyaltyAccount` | The TICKS asset + two settlement rails (cash, CIP-56 allocations) |
 | `Kyd.Registry` | `KydTransferFactory`, `KydAllocationFactory`, `KydAllocation` | The CIP-56 registry over `Cash`: standard transfer/allocation factories (Canton Coin's Amulet architecture) |
@@ -296,11 +297,14 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
 14. `testReceiptRefund` — with no facility owed, operator+venue jointly refund
     an escrowed share to the venue
 
-**Token-standard suite** (`Kyd.TokenTest`): `testCip56DvPResale` — full DvP
-through the real `Allocation` interface (two legs + ticket, one transaction);
-`testCip56LegValidation` — short legs, foreign settlement references,
-third-party-funded legs and missing royalty legs all rejected; withdrawn
-allocations refund through the registry.
+**Token-standard suite** (`Kyd.TokenTest`, driven through the real
+`Kyd.Registry` factories): `testCip56DvPResale` — full DvP via the
+`AllocationFactory`/`Allocation` interface (two legs + ticket, one
+transaction); `testCip56LegValidation` — short legs, foreign settlement
+references, third-party-funded legs and missing royalty legs all rejected;
+`testCip56Transfer` — free-of-payment transfer via the standard
+`TransferFactory`; `testCip56LockReservation` — an allocated holding is locked
+in place (still owned, unspendable) until it settles or is withdrawn.
 
 **Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
 fail): forged cash issuance and theft, overdrafts, authority abuse on
@@ -338,13 +342,18 @@ Both — and every other major Canton asset — speak the
 So the one integration that composes with all of them is the standard itself:
 
 - **`Kyd.Cash` is a full token-standard asset, not a Holding stub.** It
-  implements the `Holding` interface, and `Kyd.Registry` publishes the standard
-  **`TransferFactory`** and **`AllocationFactory`** that operate on it — exactly
-  Canton Coin's Amulet architecture, where the asset implements `Holding` and
-  the registry app provides the factories wallets fetch. Every CIP-56 wallet
-  (Loop, Canton Coin wallets) discovers and displays balances via an
-  `InterfaceFilter` on `Splice.Api.Token.HoldingV1:Holding`, no KYD-specific
-  wallet code.
+  implements the `Holding` interface (including holding-level **locks**), and
+  `Kyd.Registry` publishes the standard **`TransferFactory`** and
+  **`AllocationFactory`** that operate on it — exactly Canton Coin's Amulet
+  architecture, where the asset implements `Holding` and the registry app
+  provides the factories wallets fetch. Every CIP-56 wallet (Loop, Canton Coin
+  wallets) discovers and displays balances via an `InterfaceFilter` on
+  `Splice.Api.Token.HoldingV1:Holding`, no KYD-specific wallet code.
+- **Allocations lock funds in place** — like Amulet, the registry reserves a
+  holding by locking it where it sits (custody stays with the owner; the
+  operator holds the lock) rather than taking custody. Settlement unlocks and
+  pays the receiver; withdrawal releases the lock back. A locked holding is
+  unspendable and excluded from spendable balance (`testCip56LockReservation`).
 - **Ticket resale settles via the `Allocation` API** (`Ticket_OfferDvP` →
   `DvPResaleOffer`): the buyer's wallet calls the `AllocationFactory` to fund
   two standard legs (seller proceeds + artist royalty), and settlement executes
@@ -363,7 +372,7 @@ So the one integration that composes with all of them is the standard itself:
   deployments swap the vendored DAR for the official `splice-api-token-*-v1`
   releases (one `daml.yaml` line) so package ids match what Canton Coin and
   USDCx implement. `Kyd.Registry` is a real registry over `Cash` (factories +
-  escrowed allocations) so `daml test` drives the whole rail through the
+  lock-in-place allocations) so `daml test` drives the whole rail through the
   standard factories and `Allocation` interface — the same calls a wallet makes
   against Canton Coin.
 

@@ -24,7 +24,7 @@ testCashSecurity = do
   c <- setupCast
   -- Forgery: Alice cannot issue herself operator cash (operator is signatory).
   submitMustFail c.alice $ createCmd Cash with
-    operator = c.operator, owner = c.alice, amount = 1000000.0, observers = []
+    operator = c.operator, owner = c.alice, amount = 1000000.0, lock = None, observers = []
   n <- mint c c.alice 100.0
   -- Theft: neither the operator nor a stranger can move the owner's note.
   submitMustFail c.operator $ exerciseCmd n (Cash_Transfer with newOwner = c.operator)

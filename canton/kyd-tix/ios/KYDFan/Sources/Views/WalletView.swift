@@ -57,6 +57,7 @@ struct WalletView: View {
             "operator": parties.operatorParty,
             "owner": fan.party,
             "amount": String(format: "%.10f", amount),
+            "lock": NSNull(),
             "observers": [],
         ])
         await load()

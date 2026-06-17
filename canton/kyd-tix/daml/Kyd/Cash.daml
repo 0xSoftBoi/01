@@ -1,9 +1,17 @@
--- | A minimal operator-issued cash / stablecoin used to settle ticket resales
---   and TIX loans. This is the canonical Daml IOU pattern: the issuer (the KYD
---   operator) is the sole signatory, while the holder controls movement of their
---   own balance. On Solana this role is played by USDC; here it is an on-ledger
---   liability of the operator so that settlement is atomic with ticket transfer.
+-- | An operator-issued cash / stablecoin used to settle ticket resales and TIX
+--   loans. The canonical Daml IOU pattern: the issuer (the KYD operator) is the
+--   sole signatory, the holder controls movement of their own balance. On Solana
+--   this role is played by USDC; here it is an on-ledger liability of the
+--   operator so settlement is atomic with ticket transfer.
+--
+--   Cash is a CIP-56 token-standard asset: it implements the `Holding`
+--   interface (incl. holding-level locks), and `Kyd.Registry` provides the
+--   standard transfer/allocation factories over it — the same split Canton
+--   Coin's Amulet uses. Locking lets the registry reserve a holding in place
+--   (custody stays with the owner) while a transfer or allocation is in flight.
 module Kyd.Cash where
+
+import DA.Optional (isNone)
 
 import Splice.Api.Token.HoldingV1
 import Splice.Api.Token.MetadataV1 (emptyMetadata)
@@ -18,29 +26,33 @@ template Cash
     operator : Party
     owner : Party
     amount : Decimal
-    observers : [Party]   -- disclosure list, e.g. escrow counterparties
+    lock : Optional Lock   -- set while reserved by the registry (allocation/transfer in flight)
+    observers : [Party]    -- disclosure list, e.g. settlement counterparties
   where
     signatory operator
     observer (owner :: observers)
     ensure amount > 0.0
 
-    -- CIP-56: present this note as a standard Holding, so any token-standard
-    -- wallet (Loop, Canton Coin wallets, ...) can discover and display TIX
-    -- balances via an InterfaceFilter on Splice.Api.Token.HoldingV1:Holding.
+    -- CIP-56: present this note as a standard Holding (with its lock state) so
+    -- any token-standard wallet (Loop, Canton Coin wallets, ...) can discover
+    -- and display balances via an InterfaceFilter on
+    -- Splice.Api.Token.HoldingV1:Holding.
     interface instance Holding for Cash where
       view = HoldingView with
         owner
         instrumentId = kydInstrumentId operator
         amount
-        lock = None
+        lock
         meta = emptyMetadata
 
     -- | Hand the full balance to a new holder. Disclosure persists across the
-    --   transfer (escrow flows rely on this); the new owner can reset it.
+    --   transfer; the new owner can reset it. Locked holdings cannot move.
     choice Cash_Transfer : ContractId Cash
       with newOwner : Party
       controller owner
-      do create this with owner = newOwner
+      do
+        assertMsg "locked holdings cannot be transferred" (isNone lock)
+        create this with owner = newOwner
 
     -- | Owner sets who else may see this note (pass [] to clear disclosure).
     choice Cash_Disclose : ContractId Cash
@@ -53,6 +65,7 @@ template Cash
       with splitAmount : Decimal
       controller owner
       do
+        assertMsg "locked holdings cannot be split" (isNone lock)
         assertMsg "split must be positive and smaller than the balance"
           (splitAmount > 0.0 && splitAmount < amount)
         kept  <- create this with amount = amount - splitAmount
@@ -64,14 +77,36 @@ template Cash
       with otherCid : ContractId Cash
       controller owner
       do
+        assertMsg "locked holdings cannot be merged" (isNone lock)
         other <- fetch otherCid
-        assertMsg "can only merge notes of the same owner and operator"
-          (other.owner == owner && other.operator == operator)
+        assertMsg "can only merge unlocked notes of the same owner and operator"
+          (other.owner == owner && other.operator == operator && isNone other.lock)
         archive otherCid
         create this with amount = amount + other.amount
 
--- | Merge a list of notes into the first (all same owner/operator). Used by
---   batch settlement to consolidate many small escrows into one waterfall run.
+    -- | Registry reserves this holding in place (owner keeps it; it cannot be
+    --   moved until unlocked). Authorized by the operator as instrument admin.
+    choice Cash_Lock : ContractId Cash
+      with newLock : Lock
+      controller operator
+      do
+        assertMsg "holding is already locked" (isNone lock)
+        create this with lock = Some newLock
+
+    -- | Registry releases the reservation, leaving the holding with its owner.
+    choice Cash_Unlock : ContractId Cash
+      controller operator
+      do create this with lock = None
+
+    -- | Registry settles a locked holding to a new owner in one step (used when
+    --   an allocation executes). Authorized by the operator as instrument admin.
+    choice Cash_SettleLocked : ContractId Cash
+      with newOwner : Party
+      controller operator
+      do create this with owner = newOwner, lock = None, observers = []
+
+-- | Merge a list of (unlocked) notes into the first. Used by batch settlement
+--   to consolidate many small notes into one before a waterfall run.
 mergeMany : ContractId Cash -> [ContractId Cash] -> Update (ContractId Cash)
 mergeMany acc [] = pure acc
 mergeMany acc (x :: xs) = do
