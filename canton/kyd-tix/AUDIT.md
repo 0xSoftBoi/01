@@ -42,11 +42,15 @@ as **locked holdings**, moving custody from the app operator to the
 instrument's own registry (see `validator/README.md`).
 Partially verified by `testReceiptCustody` (no party other than the operator
 can release; refund requires operator AND venue).
-**Mitigation progress:** the resale rail already settles via CIP-56
-`Allocation`s (`Kyd.Ticket:DvPResaleOffer`, tested through the standard
-interface in `Kyd.TokenTest`), where escrow custody sits with the asset's own
-registry, not the app operator. Extending the same rail to financing
-commitments and revenue-share escrows retires this finding fully.
+**Mitigation progress:** the resale rail settles via the CIP-56 standard
+factories and `Allocation` interface — `Kyd.Registry` implements
+`TransferFactory`/`AllocationFactory`/`Allocation` over `Cash`
+(`Kyd.Ticket:DvPResaleOffer`, exercised through the real factories in
+`Kyd.TokenTest`). Swapping `Kyd.Registry` for the Canton Coin / USDCx registry
+(a dependency change, since the settlement code speaks only the interface)
+moves custody to the instrument's own registry and retires this finding for
+the resale path; extending the same factory call to the financing escrows
+closes it fully.
 
 ### KYD-03 — Batch settlement delays lender receipt (LOW, by design)
 

@@ -1,6 +1,7 @@
--- | End-to-end tests for the CIP-56 settlement rail: the ticket DvP executes
---   purely through the standard 'Allocation' interface, with the mock registry
---   standing in for Canton Coin / USDCx.
+-- | End-to-end tests for the CIP-56 settlement rail. Allocations and transfers
+--   are produced by the REAL token-standard factories in 'Kyd.Registry'
+--   (TransferFactory / AllocationFactory) operating on 'Kyd.Cash' holdings —
+--   the same flow a wallet runs against Canton Coin / USDCx on the network.
 module Kyd.TokenTest where
 
 import Daml.Script
@@ -8,53 +9,68 @@ import DA.Assert ((===))
 import DA.Date (date, Month(..))
 import DA.Time (time)
 
-import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.HoldingV1 (Holding)
 import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Api.Token.TransferInstructionV1
 
 import Kyd.Cash
 import Kyd.Event
-import Kyd.MockRegistry
+import Kyd.Registry
 import Kyd.Ticket
 import Kyd.Test (Cast(..), setupCast, mint, cashOf, makeEvent, openGA)
 
 emptyExtra : ExtraArgs
 emptyExtra = ExtraArgs with context = emptyChoiceContext, meta = emptyMetadata
 
--- Fund and allocate one settlement leg in the mock registry: the sender's
--- cash is escrowed with the instrument admin, disclosed to the receiver.
-allocateLeg : Cast -> Party -> Party -> Decimal -> Text -> Text -> Script (ContractId Allocation)
-allocateLeg c sender receiver amount ref legId = do
+-- The registry publishes a public AllocationFactory; a wallet fetches it and
+-- instructs allocations against it.
+allocationFactory : Cast -> Script (ContractId AllocationFactory)
+allocationFactory c = do
+  cid <- submit c.operator $ createCmd KydAllocationFactory with operator = c.operator, public = c.public
+  pure (toInterfaceContractId @AllocationFactory cid)
+
+-- A wallet funds and allocates one settlement leg through the standard factory:
+-- the sender's holdings are escrowed in registry custody until the leg settles.
+allocateLeg : Cast -> ContractId AllocationFactory -> Party -> Party -> Decimal -> Text -> Text -> Script (ContractId Allocation)
+allocateLeg c factory sender receiver amount ref legId = do
   n <- mint c sender amount
-  d <- submit sender $ exerciseCmd n (Cash_Disclose with parties = [sender, receiver])
-  escrow <- submit sender $ exerciseCmd d (Cash_Transfer with newOwner = c.operator)
   now <- getTime
-  cid <- submitMulti [sender, c.operator] [] $ createCmd MockAllocation with
-    spec = AllocationSpecification with
-      settlement = SettlementInfo with
-        executor = c.operator
-        settlementRef = Reference with id = ref, cid = None
-        requestedAt = now
-        allocateBefore = time (date 2026 Jul 1) 0 0 0
-        settleBefore = time (date 2026 Aug 1) 0 0 0
-        meta = emptyMetadata
-      transferLegId = legId
-      transferLeg = TransferLeg with
-        sender
-        receiver
-        amount
-        instrumentId = kydInstrumentId c.operator
-        meta = emptyMetadata
-    escrow
-  pure (toInterfaceContractId @Allocation cid)
+  let spec = AllocationSpecification with
+        settlement = SettlementInfo with
+          executor = c.operator
+          settlementRef = Reference with id = ref, cid = None
+          requestedAt = now
+          allocateBefore = time (date 2026 Jul 1) 0 0 0
+          settleBefore = time (date 2026 Aug 1) 0 0 0
+          meta = emptyMetadata
+        transferLegId = legId
+        transferLeg = TransferLeg with
+          sender
+          receiver
+          amount
+          instrumentId = kydInstrumentId c.operator
+          meta = emptyMetadata
+  res <- submitMulti [sender] [c.public] $ exerciseCmd factory (AllocationFactory_Allocate with
+    expectedAdmin = c.operator
+    allocation = spec
+    requestedAt = now
+    inputHoldingCids = [toInterfaceContractId @Holding n]
+    extraArgs = emptyExtra)
+  case res.output of
+    AllocationInstructionResult_Completed allocationCid -> pure allocationCid
+    _ -> abort "allocation was not completed by the registry"
 
 -- 1. Full CIP-56 DvP resale: Alice sells her 50-face ticket to Bob for 70.
 --    Bob's wallet allocates two standard legs (63 to Alice, 7 royalty to the
---    artist); settlement executes both allocations and moves the ticket in
---    one atomic transaction — the exact flow that runs against Canton Coin or
---    USDCx allocations on the network, unchanged.
+--    artist) via the AllocationFactory; settlement executes both allocations
+--    and moves the ticket in one atomic transaction — the exact flow that runs
+--    against Canton Coin or USDCx on the network, unchanged.
 testCip56DvPResale : Script ()
 testCip56DvPResale = do
   c <- setupCast
+  factory <- allocationFactory c
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
   (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
@@ -71,8 +87,8 @@ testCip56DvPResale = do
     buyer = c.bob, salePrice = 70.0, paymentInstrument = kydInstrumentId c.operator, settlementRef = "DEAL-1")
 
   -- Bob's wallet allocates both legs of the settlement.
-  sellerLeg  <- allocateLeg c c.bob c.alice 63.0 "DEAL-1" "seller"
-  royaltyLeg <- allocateLeg c c.bob c.artist 7.0 "DEAL-1" "royalty"
+  sellerLeg  <- allocateLeg c factory c.bob c.alice 63.0 "DEAL-1" "seller"
+  royaltyLeg <- allocateLeg c factory c.bob c.artist 7.0 "DEAL-1" "royalty"
 
   -- Settlement clears through the platform (buyer + operator), executing both
   -- allocations and the ticket transfer atomically.
@@ -93,10 +109,11 @@ testCip56DvPResale = do
 
 -- 2. The settlement validates every leg: wrong amounts, foreign settlement
 --    references, and third-party-funded legs are all rejected; the buyer can
---    withdraw a mis-allocated leg and the escrow comes back.
+--    withdraw a mis-allocated leg and the registry refunds it.
 testCip56LegValidation : Script ()
 testCip56LegValidation = do
   c <- setupCast
+  factory <- allocationFactory c
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
   (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
@@ -106,8 +123,8 @@ testCip56LegValidation = do
     buyer = c.bob, salePrice = 70.0, paymentInstrument = kydInstrumentId c.operator, settlementRef = "DEAL-2")
 
   -- Underpaying the seller leg (60 instead of 63) is rejected.
-  shortLeg   <- allocateLeg c c.bob c.alice 60.0 "DEAL-2" "seller"
-  royaltyLeg <- allocateLeg c c.bob c.artist 7.0 "DEAL-2" "royalty"
+  shortLeg   <- allocateLeg c factory c.bob c.alice 60.0 "DEAL-2" "seller"
+  royaltyLeg <- allocateLeg c factory c.bob c.artist 7.0 "DEAL-2" "royalty"
   submitMultiMustFail [c.bob, c.operator] [] $ exerciseCmd offer (DvPResale_Settle with
     sellerLegCid = shortLeg
     royaltyLegCid = Some royaltyLeg
@@ -115,7 +132,7 @@ testCip56LegValidation = do
     extraArgs = emptyExtra)
 
   -- A leg allocated against a DIFFERENT settlement reference is rejected.
-  foreignLeg <- allocateLeg c c.bob c.alice 63.0 "OTHER-DEAL" "seller"
+  foreignLeg <- allocateLeg c factory c.bob c.alice 63.0 "OTHER-DEAL" "seller"
   submitMultiMustFail [c.bob, c.operator] [] $ exerciseCmd offer (DvPResale_Settle with
     sellerLegCid = foreignLeg
     royaltyLegCid = Some royaltyLeg
@@ -123,7 +140,7 @@ testCip56LegValidation = do
     extraArgs = emptyExtra)
 
   -- A leg funded by someone other than the buyer is rejected.
-  lenderLeg <- allocateLeg c c.lender c.alice 63.0 "DEAL-2" "seller"
+  lenderLeg <- allocateLeg c factory c.lender c.alice 63.0 "DEAL-2" "seller"
   submitMultiMustFail [c.bob, c.operator] [] $ exerciseCmd offer (DvPResale_Settle with
     sellerLegCid = lenderLeg
     royaltyLegCid = Some royaltyLeg
@@ -131,7 +148,7 @@ testCip56LegValidation = do
     extraArgs = emptyExtra)
 
   -- Settlement without the royalty leg is rejected (royalty is owed).
-  okLeg <- allocateLeg c c.bob c.alice 63.0 "DEAL-2" "seller"
+  okLeg <- allocateLeg c factory c.bob c.alice 63.0 "DEAL-2" "seller"
   submitMultiMustFail [c.bob, c.operator] [] $ exerciseCmd offer (DvPResale_Settle with
     sellerLegCid = okLeg
     royaltyLegCid = None
@@ -142,3 +159,29 @@ testCip56LegValidation = do
   _ <- submit c.bob $ exerciseCmd shortLeg (Allocation_Withdraw with extraArgs = emptyExtra)
   bobBal <- cashOf c.bob
   bobBal === 60.0
+
+-- 3. Free-of-payment transfer via the standard TransferFactory: Alice sends
+--    Bob 40 of her 100; change returns to Alice, all in one step.
+testCip56Transfer : Script ()
+testCip56Transfer = do
+  c <- setupCast
+  tfCid <- submit c.operator $ createCmd KydTransferFactory with operator = c.operator, public = c.public
+  let factory = toInterfaceContractId @TransferFactory tfCid
+  n <- mint c c.alice 100.0
+  now <- getTime
+  _ <- submitMulti [c.alice] [c.public] $ exerciseCmd factory (TransferFactory_Transfer with
+    expectedAdmin = c.operator
+    transfer = Transfer with
+      sender = c.alice
+      receiver = c.bob
+      amount = 40.0
+      instrumentId = kydInstrumentId c.operator
+      requestedAt = now
+      executeBefore = time (date 2026 Aug 1) 0 0 0
+      inputHoldingCids = [toInterfaceContractId @Holding n]
+      meta = emptyMetadata
+    extraArgs = emptyExtra)
+  aliceBal <- cashOf c.alice
+  bobBal   <- cashOf c.bob
+  aliceBal === 60.0
+  bobBal   === 40.0

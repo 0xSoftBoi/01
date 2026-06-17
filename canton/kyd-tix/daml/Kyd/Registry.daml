@@ -1,0 +1,151 @@
+-- | The KYD asset registry: the real CIP-56 token-standard surface for
+--   'Kyd.Cash'. This is the same architecture Canton Coin uses — the asset
+--   contract implements 'Holding', and the registry app (the operator)
+--   publishes factory contracts that wallets fetch to instruct standard
+--   transfers and allocations:
+--
+--     * 'KydTransferFactory'   implements Splice TransferFactory  (free-of-payment transfers)
+--     * 'KydAllocationFactory' implements Splice AllocationFactory (DvP settlement legs)
+--     * 'KydAllocation'        implements Splice Allocation        (a funded, escrowed leg)
+--
+--   Because the resale rail in 'Kyd.Ticket' consumes the standard 'Allocation'
+--   interface, swapping this registry for Canton Coin / USDCx on the network is
+--   a dependency change, not a code change — the settlement logic is identical.
+module Kyd.Registry where
+
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.HoldingV1 (Holding)
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Api.Token.TransferInstructionV1
+
+import Kyd.Cash
+
+-- | Consolidate a sender's input holdings into a single note of exactly
+--   `amount`, returning that note and any change left with the sender.
+--   Archiving the inputs makes settlement conflict with any concurrent spend
+--   of the same holdings — the standard's deliberate-contention guarantee.
+consolidateToExact : Decimal -> [ContractId Cash] -> Update (ContractId Cash, [ContractId Cash])
+consolidateToExact amount cids = case cids of
+  [] -> abort "no input holdings provided"
+  (h :: rest) -> do
+    merged <- mergeMany h rest
+    m <- fetch merged
+    assertMsg "input holdings do not cover the amount" (m.amount >= amount)
+    if m.amount == amount
+      then pure (merged, [])
+      else do
+        (change, exact) <- exercise merged (Cash_Split with splitAmount = amount)
+        pure (exact, [change])
+
+-- | Registry-published factory for free-of-payment transfers.
+template KydTransferFactory
+  with
+    operator : Party
+    public : Party   -- well-known party every wallet reads to fetch the factory
+  where
+    signatory operator
+    observer public
+
+    interface instance TransferFactory for KydTransferFactory where
+      view = TransferFactoryView with admin = operator, meta = emptyMetadata
+
+      transferFactory_publicFetchImpl _self arg = do
+        assertMsg "unexpected registry admin" (arg.expectedAdmin == operator)
+        pure TransferFactoryView with admin = operator, meta = emptyMetadata
+
+      transferFactory_transferImpl _self arg = do
+        assertMsg "unexpected registry admin" (arg.expectedAdmin == operator)
+        let t = arg.transfer
+        assertMsg "wrong instrument" (t.instrumentId == kydInstrumentId operator)
+        now <- getTime
+        assertMsg "transfer window has closed" (now < t.executeBefore)
+        (funded, change) <- consolidateToExact t.amount (map (fromInterfaceContractId @Cash) t.inputHoldingCids)
+        paid <- exercise funded (Cash_Transfer with newOwner = t.receiver)
+        pure TransferInstructionResult with
+          output = TransferInstructionResult_Completed with
+            receiverHoldingCids = [toInterfaceContractId @Holding paid]
+          senderChangeCids = map (toInterfaceContractId @Holding) change
+          meta = emptyMetadata
+
+-- | Registry-published factory for allocating assets to a settlement leg.
+template KydAllocationFactory
+  with
+    operator : Party
+    public : Party   -- well-known party every wallet reads to fetch the factory
+  where
+    signatory operator
+    observer public
+
+    interface instance AllocationFactory for KydAllocationFactory where
+      view = AllocationFactoryView with admin = operator, meta = emptyMetadata
+
+      allocationFactory_publicFetchImpl _self arg = do
+        assertMsg "unexpected registry admin" (arg.expectedAdmin == operator)
+        pure AllocationFactoryView with admin = operator, meta = emptyMetadata
+
+      allocationFactory_allocateImpl _self arg = do
+        assertMsg "unexpected registry admin" (arg.expectedAdmin == operator)
+        let spec = arg.allocation
+            leg = spec.transferLeg
+        assertMsg "wrong instrument" (leg.instrumentId == kydInstrumentId operator)
+        (funded, change) <- consolidateToExact leg.amount (map (fromInterfaceContractId @Cash) arg.inputHoldingCids)
+        -- Escrow the funds in registry custody until the leg settles, disclosed
+        -- to sender and receiver so both are stakeholders of the escrow (no
+        -- reliance on divulgence).
+        escrow0 <- exercise funded (Cash_Transfer with newOwner = operator)
+        escrow <- exercise escrow0 (Cash_Disclose with parties = [leg.sender, leg.receiver])
+        allocCid <- create KydAllocation with operator, spec, escrow
+        pure AllocationInstructionResult with
+          output = AllocationInstructionResult_Completed with
+            allocationCid = toInterfaceContractId @Allocation allocCid
+          senderChangeCids = map (toInterfaceContractId @Holding) change
+          meta = emptyMetadata
+
+-- | A funded allocation: escrowed Cash held by the registry until the
+--   settlement executes (pays the receiver) or is cancelled/withdrawn
+--   (refunds the sender).
+template KydAllocation
+  with
+    operator : Party
+    spec : AllocationSpecification
+    escrow : ContractId Cash
+  where
+    signatory operator, spec.transferLeg.sender
+    observer spec.transferLeg.receiver, spec.settlement.executor
+
+    interface instance Allocation for KydAllocation where
+      view = AllocationView with
+        allocation = spec
+        holdingCids = [toInterfaceContractId @Holding escrow]
+        meta = emptyMetadata
+
+      allocation_executeTransferImpl _self _arg = do
+        now <- getTime
+        assertMsg "settlement deadline has passed" (now < spec.settlement.settleBefore)
+        cash <- fetch escrow
+        assertMsg "escrow no longer matches the allocated amount"
+          (cash.amount == spec.transferLeg.amount)
+        paid <- exercise escrow (Cash_Transfer with newOwner = spec.transferLeg.receiver)
+        pure Allocation_ExecuteTransferResult with
+          senderHoldingCids = []
+          receiverHoldingCids = [toInterfaceContractId @Holding paid]
+          meta = emptyMetadata
+
+      allocation_cancelImpl _self _arg = do
+        refunded <- refundEscrow this
+        pure Allocation_CancelResult with
+          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          meta = emptyMetadata
+
+      allocation_withdrawImpl _self _arg = do
+        refunded <- refundEscrow this
+        pure Allocation_WithdrawResult with
+          senderHoldingCids = [toInterfaceContractId @Holding refunded]
+          meta = emptyMetadata
+
+-- | Return escrowed funds to the sender (and clear their disclosure).
+refundEscrow : KydAllocation -> Update (ContractId Cash)
+refundEscrow a = do
+  refunded <- exercise a.escrow (Cash_Transfer with newOwner = a.spec.transferLeg.sender)
+  exercise refunded (Cash_Disclose with parties = [])

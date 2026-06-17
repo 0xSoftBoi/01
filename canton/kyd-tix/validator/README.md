@@ -114,12 +114,15 @@ incentive design pays for.
 
 ## 5. Canton Coin / CIP-56 as the settlement asset
 
-**Status: the resale rail is implemented.** `Kyd.Cash` implements the CIP-56
-`Holding` interface, and ticket resale settles through standard `Allocation`s
-(`Ticket_OfferDvP` → `DvPResaleOffer`), tested end-to-end against the
-interface via `Kyd.MockRegistry`. On the network, point the buyer's wallet at
-Canton Coin or USDCx allocations and the identical settlement code runs. The
-remaining swap (financing escrows; audit KYD-02) follows the
+**Status: the registry and resale rail are implemented.** `Kyd.Cash` implements
+the CIP-56 `Holding` interface, and `Kyd.Registry` implements the standard
+`TransferFactory`, `AllocationFactory` and `Allocation` over it — the same
+architecture as Canton Coin's Amulet. Ticket resale settles by calling the
+`AllocationFactory` and executing the resulting `Allocation`s
+(`Ticket_OfferDvP` → `DvPResale_Settle`), tested end-to-end. On the network,
+swap the vendored interface DAR for the official `splice-api-token-*-v1`
+releases and point the wallet at Canton Coin / USDCx — the identical settlement
+code runs. The remaining swap (financing escrows; audit KYD-02) follows the
 [Canton Network token standard (CIP-56)](https://www.canton.network/blog/what-is-cip-56-a-guide-to-cantons-token-standard) /
 [Token Standard APIs](https://docs.global.canton.network.sync.global/app_dev/token_standard/index.html):
 

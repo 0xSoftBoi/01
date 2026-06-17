@@ -128,7 +128,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | `Kyd.Cash` | `Cash` (implements CIP-56 `Holding`) | USDC SPL token (here: operator IOU, wallet-visible via the token standard) |
 | `Kyd.Event` | `Event` (cold master), `TierAllocation` (hot shards), `PurchaseOrder` | Event/collection program + mint authority + the sales engine |
 | `Kyd.Ticket` | `Ticket`, `ResaleOffer`, `DvPResaleOffer`, `RoyaltyAccount` | The TICKS asset + two settlement rails (cash, CIP-56 allocations) |
-| `Kyd.MockRegistry` | `MockAllocation` (implements CIP-56 `Allocation`) | Reference registry so tests drive the standard interface end-to-end |
+| `Kyd.Registry` | `KydTransferFactory`, `KydAllocationFactory`, `KydAllocation` | The CIP-56 registry over `Cash`: standard transfer/allocation factories (Canton Coin's Amulet architecture) |
 | `splice-token-standard/` | vendored `Splice.Api.Token.{MetadataV1,HoldingV1,AllocationV1}` | The CIP-56 interfaces (separate package, as SCU requires) |
 | `Kyd.Settlement` | `RevenueShare` | Escrowed financing carve-outs (contention decoupling) |
 | `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, batch sweep, tranche secondary market |
@@ -337,16 +337,20 @@ Both — and every other major Canton asset — speak the
 **[CIP-56 token standard](https://www.canton.network/blog/what-is-cip-56-a-guide-to-cantons-token-standard)**.
 So the one integration that composes with all of them is the standard itself:
 
-- **`Kyd.Cash` implements the `Holding` interface** — every CIP-56 wallet
-  (Loop, Canton Coin wallets) discovers and displays TIX balances via an
-  `InterfaceFilter` on `Splice.Api.Token.HoldingV1:Holding`, no
-  KYD-specific wallet code.
+- **`Kyd.Cash` is a full token-standard asset, not a Holding stub.** It
+  implements the `Holding` interface, and `Kyd.Registry` publishes the standard
+  **`TransferFactory`** and **`AllocationFactory`** that operate on it — exactly
+  Canton Coin's Amulet architecture, where the asset implements `Holding` and
+  the registry app provides the factories wallets fetch. Every CIP-56 wallet
+  (Loop, Canton Coin wallets) discovers and displays balances via an
+  `InterfaceFilter` on `Splice.Api.Token.HoldingV1:Holding`, no KYD-specific
+  wallet code.
 - **Ticket resale settles via the `Allocation` API** (`Ticket_OfferDvP` →
-  `DvPResaleOffer`): the buyer's wallet allocates two standard transfer legs
-  (seller proceeds + artist royalty) in **any CIP-56 asset — Canton Coin,
-  USDCx, cBTC — and settlement executes both allocations and the ticket
-  transfer in one atomic transaction.** The settlement code speaks only the
-  interface, so no code changes per asset.
+  `DvPResaleOffer`): the buyer's wallet calls the `AllocationFactory` to fund
+  two standard legs (seller proceeds + artist royalty), and settlement executes
+  both allocations and the ticket transfer in **one atomic transaction**, in
+  **any CIP-56 asset — Canton Coin, USDCx, cBTC**. The settlement code speaks
+  only the interface, so no code changes per asset.
 - **The royalty leg is the subtle part**: executing an allocation requires the
   *receiver's* authority, and the artist doesn't sign resale offers. The
   artist's standing `RoyaltyAccount` (signed once at onboarding) lends that
@@ -358,9 +362,10 @@ So the one integration that composes with all of them is the standard itself:
   that interfaces and implementations must not share a package. On-network
   deployments swap the vendored DAR for the official `splice-api-token-*-v1`
   releases (one `daml.yaml` line) so package ids match what Canton Coin and
-  USDCx implement. `Kyd.MockRegistry` is the reference `Allocation`
-  implementation that lets `daml test` drive the whole rail through the
-  standard interface.
+  USDCx implement. `Kyd.Registry` is a real registry over `Cash` (factories +
+  escrowed allocations) so `daml test` drives the whole rail through the
+  standard factories and `Allocation` interface — the same calls a wallet makes
+  against Canton Coin.
 
 ## Canton Network deployment (`validator/`)
 
