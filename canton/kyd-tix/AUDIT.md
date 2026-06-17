@@ -43,6 +43,11 @@ Verified by `testCommittedFundsLockedInPlace` (a committed note stays
 lender-owned and is unspendable), `testCip56LockReservation` (allocations lock
 in place), and `testReceiptCustody` (refund needs operator AND venue; the venue
 cannot release).
+Lock-in-place introduces one new risk — a stuck/malicious operator never
+releasing a lock — which is closed by **expirable locks**: commitment locks
+carry the offering's due date as `expiresAt`, and `Cash_UnlockExpired` lets the
+holder reclaim unilaterally once it passes (CIP-56's expired-lock guidance).
+Verified by `testCommitmentExpiryReclaim`.
 The residual issuer risk (all `Kyd.Cash` is an operator IOU) is closed by the
 production swap to Canton Coin / USDCx — a `Kyd.Registry` dependency change,
 since all settlement speaks only the CIP-56 interfaces (see

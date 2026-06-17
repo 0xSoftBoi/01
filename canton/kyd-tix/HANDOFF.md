@@ -1,7 +1,9 @@
 # Handoff
 
 Everything the next engineer needs to take this from demo to production,
-honestly labeled. Start here, then `README.md` for the architecture story.
+honestly labeled. Start here, then `README.md` for the architecture story and
+`DESIGN.md` for the decision record (why each choice, and the open questions
+for KYD).
 
 ## One-command map
 

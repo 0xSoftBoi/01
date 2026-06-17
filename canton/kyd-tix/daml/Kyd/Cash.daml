@@ -98,6 +98,22 @@ template Cash
       controller operator
       do create this with lock = None
 
+    -- | The OWNER reclaims a holding whose lock has passed its expiry, so a
+    --   reservation can never freeze funds indefinitely (CIP-56: registries
+    --   should honor expired locks). This is the holder's safety valve against
+    --   an operator that never settles or releases.
+    choice Cash_UnlockExpired : ContractId Cash
+      controller owner
+      do
+        now <- getTime
+        case lock of
+          None -> abort "holding is not locked"
+          Some l -> case l.expiresAt of
+            None -> abort "lock has no expiry to reclaim against"
+            Some deadline -> do
+              assertMsg "lock has not yet expired" (now >= deadline)
+              create this with lock = None
+
     -- | Registry settles a locked holding to a new owner in one step (used when
     --   an allocation executes). Authorized by the operator as instrument admin.
     choice Cash_SettleLocked : ContractId Cash
