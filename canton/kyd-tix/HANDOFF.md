@@ -32,9 +32,11 @@ every push touching this tree.
    `ios .../LedgerClient.swift`) with OAuth2/OIDC in front of the JSON API;
    TLS everywhere. The token shape is already production-form.
 2. **Real money**: swap `Kyd.Cash` for CIP-56 holdings (Canton Coin/USDCx).
-   The resale rail already settles via the standard `Allocation` interface;
-   extend it to financing escrows (retires audit KYD-02 fully) and replace the
-   vendored interface package with the official DARs (one daml.yaml line).
+   All settlement — resale, commitments, and revenue shares — already speaks
+   the standard `Holding`/`Allocation`/factory interfaces with lock-in-place
+   custody (audit KYD-02 resolved), so this is a `Kyd.Registry` dependency
+   change plus replacing the vendored interface package with the official DARs
+   (one daml.yaml line).
 3. **Catalog service**: the demo reads the catalog with the operator party
    from the browser; production puts that read behind a backend endpoint
    (same trust model, no operator-readable token in any client).

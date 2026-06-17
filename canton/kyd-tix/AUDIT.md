@@ -29,29 +29,24 @@ choice now requires `controller operator, seller` — the capability is removed
 at zero cost to the workflow.
 Verified by `testRegisterIntegrity`.
 
-### KYD-02 — Escrow custody equals issuer risk (MEDIUM, acknowledged)
+### KYD-02 — Escrow custody (MEDIUM, resolved)
 
-Pending revenue shares and financing commitments are held as operator-owned
-`Cash`. A malicious operator could archive a `RevenueShare` via
-`Receipt_Release` and keep the note. However, **all** `Kyd.Cash` is already a
-liability of the operator (the issuer), so escrow custody adds no risk class
-beyond the issuer risk every holder already bears; the signed receipt is the
-venue's and lenders' auditable claim. Production mitigation: replace
-`Kyd.Cash` with Canton Coin / CIP-56 token-standard holdings, moving custody
-from the app operator to the instrument's own registry (see
+Originally, pending revenue shares and financing commitments were held as
+operator-owned `Cash` — funds in operator custody while pending, with the
+signed receipt as the holder's only claim. **Resolved** by moving every escrow
+to lock-in-place custody: funds stay owned by their holder (the venue for
+revenue shares, the lender for commitments) and the registry (operator) only
+holds a `Cash` lock, so the funds cannot be spent while reserved but custody
+never transfers to the operator. The operator can no longer abscond with a
+pending share or commitment — there is nothing operator-owned to abscond with.
+Verified by `testCommittedFundsLockedInPlace` (a committed note stays
+lender-owned and is unspendable), `testCip56LockReservation` (allocations lock
+in place), and `testReceiptCustody` (refund needs operator AND venue; the venue
+cannot release).
+The residual issuer risk (all `Kyd.Cash` is an operator IOU) is closed by the
+production swap to Canton Coin / USDCx — a `Kyd.Registry` dependency change,
+since all settlement speaks only the CIP-56 interfaces (see
 `validator/README.md`).
-Partially verified by `testReceiptCustody` (no party other than the operator
-can release; refund requires operator AND venue).
-**Mitigation progress:** the resale rail settles via the CIP-56 standard
-factories and `Allocation` interface — `Kyd.Registry` implements
-`TransferFactory`/`AllocationFactory`/`Allocation` over `Cash`, and
-allocations now **lock the holding in place**: custody stays with the owner
-and the registry only holds a lock, so even the resale escrow is no longer an
-operator-custody transfer (`testCip56LockReservation`). Swapping `Kyd.Registry`
-for the Canton Coin / USDCx registry (a dependency change, since the settlement
-code speaks only the interface) retires this finding for the resale path;
-extending the same factory call to the financing escrows
-closes it fully.
 
 ### KYD-03 — Batch settlement delays lender receipt (LOW, by design)
 

@@ -13,9 +13,10 @@
 --     outstanding share.
 --
 --   Workflow: the venue opens a 'FinancingOffering' naming the invited lenders;
---   each lender commits cash, which is locked in operator custody (lock-by-
---   safekeeping) so commitments cannot be double-spent; once fully subscribed
---   the venue activates, receiving the principal atomically while a
+--   each lender commits cash, which the registry locks IN PLACE (the lender
+--   keeps custody; it just cannot be spent) so commitments cannot be
+--   double-spent; once fully subscribed the venue activates, the committed
+--   funds settle to the venue as principal, and a
 --   'SyndicatedLoan' is booked whose tranches carry each lender's entitlement
 --   (commitment x factor rate). Ticket revenue then settles through the loan,
 --   which enforces the revenue-share split before the venue ever touches the
@@ -23,6 +24,8 @@
 module Kyd.Tix where
 
 import DA.Time (addRelTime, convertRelTimeToMicroseconds, days, subTime)
+
+import Splice.Api.Token.HoldingV1 (Lock(..))
 
 import Kyd.Cash
 import Kyd.Roles
@@ -35,13 +38,36 @@ data Tranche = Tranche
     outstanding : Decimal
   deriving (Eq, Show)
 
--- | A lender's escrowed commitment to an offering.
+-- | A lender's committed funds: owned by the lender but LOCKED IN PLACE by the
+--   registry (operator) until the raise activates or is cancelled, so custody
+--   never leaves the lender while the commitment is pending.
 data LenderCommitment = LenderCommitment
   with
     lender : Party
     amount : Decimal
-    escrow : ContractId Cash   -- held in operator custody until activate/cancel
+    locked : ContractId Cash
   deriving (Eq, Show)
+
+-- | Lock a lender's note in place as a commitment: disclose to the offering
+--   parties (so the venue can settle it on activation) and lock it under the
+--   operator. Custody stays with the lender.
+lockCommitment : Party -> Party -> Party -> Text -> ContractId Cash -> Update (ContractId Cash)
+lockCommitment operator venue lender ref cashCid = do
+  disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
+  let commitLock = Lock with
+        holders = [operator]
+        expiresAt = None
+        expiresAfter = None
+        context = Some ("KYD financing commitment: " <> ref)
+  exercise disclosed (Cash_Lock with newLock = commitLock)
+
+-- | Release a pending commitment back to its lender (unlock in place).
+unlockCommitment : LenderCommitment -> Update (ContractId Cash)
+unlockCommitment c = exercise c.locked Cash_Unlock
+
+-- | On activation, settle a committed note to the venue (unlock + assign).
+settleCommitmentToVenue : Party -> LenderCommitment -> Update (ContractId Cash)
+settleCommitmentToVenue venue c = exercise c.locked (Cash_SettleLocked with newOwner = venue)
 
 -- | Sequential pro-rata allocation of a payment across tranches. Each tranche
 --   receives payRemaining * outstanding / remainingOutstanding, which telescopes
@@ -122,14 +148,13 @@ template FinancingOffering
         let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "commitment would exceed the remaining allocation"
           (committed + cash.amount <= target)
-        -- Disclose the note to the offering parties, then lock it in operator
-        -- custody, so venue and lender remain stakeholders of the escrow.
-        disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
-        escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
-        let c = LenderCommitment with lender, amount = cash.amount, escrow
+        -- Lock the note in place under the operator; custody stays with the
+        -- lender, the venue is disclosed so it can settle on activation.
+        locked <- lockCommitment operator venue lender eventId cashCid
+        let c = LenderCommitment with lender, amount = cash.amount, locked
         create this with commitments = c :: commitments
 
-    -- | A lender withdraws before activation and is refunded from escrow.
+    -- | A lender withdraws before activation; its commitment is unlocked in place.
     choice Offering_Uncommit : ContractId FinancingOffering
       with lender : Party
       controller lender
@@ -138,16 +163,15 @@ template FinancingOffering
             others = filter (\c -> c.lender /= lender) commitments
         case mine of
           [c] -> do
-            refund <- exercise c.escrow (Cash_Transfer with newOwner = lender)
-            _ <- exercise refund (Cash_Disclose with parties = [])
+            _ <- unlockCommitment c
             create this with commitments = others
           _ -> abort "no commitment to withdraw"
 
-    -- | Venue cancels the raise; every escrowed commitment is refunded.
+    -- | Venue cancels the raise; every commitment is unlocked back to its lender.
     choice Offering_Cancel : ()
       controller venue
       do
-        _ <- forA commitments (\c -> exercise c.escrow (Cash_Transfer with newOwner = c.lender))
+        _ <- forA commitments unlockCommitment
         pure ()
 
     -- | Once fully subscribed: principal moves to the venue and the loan is
@@ -157,9 +181,7 @@ template FinancingOffering
       do
         let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "offering is not fully subscribed" (committed == target)
-        proceeds <- forA commitments $ \c -> do
-          released <- exercise c.escrow (Cash_Transfer with newOwner = venue)
-          exercise released (Cash_Disclose with parties = [])
+        proceeds <- forA commitments (settleCommitmentToVenue venue)
         let factor = intToDecimal factorRateBps / 10000.0
             loanTranches = map (\c -> Tranche c.lender (c.amount * factor)) commitments
         loan <- create SyndicatedLoan with
@@ -218,12 +240,11 @@ template OpenFinancingOffering
         let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "commitment would exceed the remaining allocation"
           (committed + cash.amount <= target)
-        disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
-        escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
-        let c = LenderCommitment with lender, amount = cash.amount, escrow
+        locked <- lockCommitment operator venue lender eventId cashCid
+        let c = LenderCommitment with lender, amount = cash.amount, locked
         create this with commitments = c :: commitments
 
-    -- | A lender withdraws before activation and is refunded from escrow.
+    -- | A lender withdraws before activation; its commitment is unlocked in place.
     choice OpenOffering_Uncommit : ContractId OpenFinancingOffering
       with lender : Party
       controller lender
@@ -232,16 +253,15 @@ template OpenFinancingOffering
             others = filter (\c -> c.lender /= lender) commitments
         case mine of
           [c] -> do
-            refund <- exercise c.escrow (Cash_Transfer with newOwner = lender)
-            _ <- exercise refund (Cash_Disclose with parties = [])
+            _ <- unlockCommitment c
             create this with commitments = others
           _ -> abort "no commitment to withdraw"
 
-    -- | Venue cancels the raise; every escrowed commitment is refunded.
+    -- | Venue cancels the raise; every commitment is unlocked back to its lender.
     choice OpenOffering_Cancel : ()
       controller venue
       do
-        _ <- forA commitments (\c -> exercise c.escrow (Cash_Transfer with newOwner = c.lender))
+        _ <- forA commitments unlockCommitment
         pure ()
 
     -- | Fully subscribed: principal to the venue, syndicated loan booked.
@@ -250,9 +270,7 @@ template OpenFinancingOffering
       do
         let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "offering is not fully subscribed" (committed == target)
-        proceeds <- forA commitments $ \c -> do
-          released <- exercise c.escrow (Cash_Transfer with newOwner = venue)
-          exercise released (Cash_Disclose with parties = [])
+        proceeds <- forA commitments (settleCommitmentToVenue venue)
         let factor = intToDecimal factorRateBps / 10000.0
             loanTranches = map (\c -> Tranche c.lender (c.amount * factor)) commitments
         loan <- create SyndicatedLoan with
@@ -352,7 +370,7 @@ template SyndicatedLoan
           tranches = map (\t -> t with outstanding = t.outstanding + t.outstanding * rate) tranches
           lastAccrual = addRelTime lastAccrual (days lateDays)
 
-    -- | Batch settlement of escrowed primary-sale revenue shares: N sales
+    -- | Batch settlement of locked-in-place primary-sale revenue shares: N sales
     --   produce N create-only 'RevenueShare' receipts, and this single
     --   consuming exercise sweeps them all down the waterfall — one loan
     --   archive per batch instead of one per ticket sale, which is the

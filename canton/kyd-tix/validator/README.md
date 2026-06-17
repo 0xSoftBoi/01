@@ -122,7 +122,8 @@ architecture as Canton Coin's Amulet. Ticket resale settles by calling the
 (`Ticket_OfferDvP` → `DvPResale_Settle`), tested end-to-end. On the network,
 swap the vendored interface DAR for the official `splice-api-token-*-v1`
 releases and point the wallet at Canton Coin / USDCx — the identical settlement
-code runs. The remaining swap (financing escrows; audit KYD-02) follows the
+code runs. Financing commitments and revenue shares use the same lock-in-place
+custody (audit KYD-02 resolved). The production swap follows the
 [Canton Network token standard (CIP-56)](https://www.canton.network/blog/what-is-cip-56-a-guide-to-cantons-token-standard) /
 [Token Standard APIs](https://docs.global.canton.network.sync.global/app_dev/token_standard/index.html):
 

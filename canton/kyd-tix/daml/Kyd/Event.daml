@@ -24,6 +24,8 @@ module Kyd.Event where
 import DA.Action (when)
 import DA.List (unique)
 
+import Splice.Api.Token.HoldingV1 (Lock(..))
+
 import Kyd.Cash
 import Kyd.Settlement
 import Kyd.Ticket
@@ -198,9 +200,16 @@ template TierAllocation
                 (_venueKeeps, slice) <- exercise paymentCid (Cash_Split with splitAmount = share)
                 pure slice
               else pure paymentCid
-          disclosed <- exercise shareSlice (Cash_Disclose with parties = [venue])
-          escrow <- exercise disclosed (Cash_Transfer with newOwner = operator)
-          _ <- create RevenueShare with operator, venue, eventId, amount = share, escrow
+          -- Lock the lenders' share IN PLACE: the venue still owns it but
+          -- cannot spend it; the registry (operator) holds the lock until the
+          -- sweep settles it. Custody never leaves the holder.
+          let shareLock = Lock with
+                holders = [operator]
+                expiresAt = None
+                expiresAfter = None
+                context = Some ("KYD revenue share: " <> eventId)
+          locked <- exercise shareSlice (Cash_Lock with newLock = shareLock)
+          _ <- create RevenueShare with operator, venue, eventId, amount = share, locked
           pure ()
         mintFromAllocation this fan
 
