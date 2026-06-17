@@ -50,13 +50,15 @@ data LenderCommitment = LenderCommitment
 
 -- | Lock a lender's note in place as a commitment: disclose to the offering
 --   parties (so the venue can settle it on activation) and lock it under the
---   operator. Custody stays with the lender.
-lockCommitment : Party -> Party -> Party -> Text -> ContractId Cash -> Update (ContractId Cash)
-lockCommitment operator venue lender ref cashCid = do
+--   operator until the offering's due date. Custody stays with the lender, and
+--   the expiry lets the lender reclaim (Cash_UnlockExpired) if the venue never
+--   activates or cancels — funds can't be frozen past the due date.
+lockCommitment : Party -> Party -> Party -> Text -> Time -> ContractId Cash -> Update (ContractId Cash)
+lockCommitment operator venue lender ref dueDate cashCid = do
   disclosed <- exercise cashCid (Cash_Disclose with parties = [venue, lender])
   let commitLock = Lock with
         holders = [operator]
-        expiresAt = None
+        expiresAt = Some dueDate
         expiresAfter = None
         context = Some ("KYD financing commitment: " <> ref)
   exercise disclosed (Cash_Lock with newLock = commitLock)
@@ -106,10 +108,10 @@ payLenders mCash ((t, p) :: rest)
             ts <- payLenders (Some kept) rest
             pure (t' :: ts)
 
--- | A venue's open capital raise against an event, syndicated across a named
---   set of lenders. Commitments are escrowed with the operator so a committed
---   note cannot be spent twice; the offering only converts into a loan when
---   fully subscribed, and cancellation refunds every lender.
+-- | A venue's capital raise against an event, syndicated across a named set of
+--   lenders. Commitments are locked in place (the lender keeps custody) so a
+--   committed note cannot be spent twice; the offering only converts into a
+--   loan when fully subscribed, and cancellation unlocks every commitment.
 template FinancingOffering
   with
     operator : Party
@@ -150,7 +152,7 @@ template FinancingOffering
           (committed + cash.amount <= target)
         -- Lock the note in place under the operator; custody stays with the
         -- lender, the venue is disclosed so it can settle on activation.
-        locked <- lockCommitment operator venue lender eventId cashCid
+        locked <- lockCommitment operator venue lender eventId dueDate cashCid
         let c = LenderCommitment with lender, amount = cash.amount, locked
         create this with commitments = c :: commitments
 
@@ -240,7 +242,7 @@ template OpenFinancingOffering
         let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "commitment would exceed the remaining allocation"
           (committed + cash.amount <= target)
-        locked <- lockCommitment operator venue lender eventId cashCid
+        locked <- lockCommitment operator venue lender eventId dueDate cashCid
         let c = LenderCommitment with lender, amount = cash.amount, locked
         create this with commitments = c :: commitments
 

@@ -597,3 +597,22 @@ testRefund = do
   aliceBal === 50.0
   tickets <- query @Ticket c.alice
   length tickets === 0
+
+-- 17. Lock expiry safety valve: a lender can always reclaim its committed funds
+--     once the offering's due date passes, even if the venue never activates or
+--     cancels — lock-in-place can't freeze funds indefinitely.
+testCommitmentExpiryReclaim : Script ()
+testCommitmentExpiryReclaim = do
+  c <- setupCast
+  _ <- makeEvent c
+  off <- makeOffering c   -- dueDate 1 Aug 2026
+  n <- mint c c.lender 600.0
+  _ <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n)
+  [(lockedCid, _)] <- query @Cash c.lender
+  -- Before the due date the lender cannot reclaim.
+  submitMustFail c.lender $ exerciseCmd lockedCid Cash_UnlockExpired
+  -- After the due date the lender reclaims unilaterally.
+  setTime (time (date 2026 Aug 2) 0 0 0)
+  _ <- submit c.lender $ exerciseCmd lockedCid Cash_UnlockExpired
+  bal <- cashOf c.lender
+  bal === 600.0

@@ -21,8 +21,10 @@ Canton's contention semantics — see [Canton engineering](#canton-engineering)
 below. The security review lives in [AUDIT.md](AUDIT.md); the production
 network plan in [validator/](validator/README.md) with an operational
 [RUNBOOK](validator/RUNBOOK.md); a native **SwiftUI fan app** lives in
-[ios/KYDFan](ios/KYDFan/README.md); and [HANDOFF.md](HANDOFF.md) maps what is
-verified, what is scaffolded, and the production gaps in priority order.
+[ios/KYDFan](ios/KYDFan/README.md); [DESIGN.md](DESIGN.md) is the decision
+record (every choice, its best-practice basis, and the open questions for KYD);
+and [HANDOFF.md](HANDOFF.md) maps what is verified, what is scaffolded, and the
+production gaps in priority order.
 Operator
 automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
