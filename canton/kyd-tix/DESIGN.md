@@ -221,7 +221,11 @@ alongside the batch path).
   Canton network (`privacy-proof/`, `./run.sh`), race-free and deterministic —
   both the `Cash` primitive and the **full app** (sharded issuance, paid sale,
   cross-participant gift; a competing venue's node holds none of another
-  venue's events/tickets). Not yet *throughput*-benchmarked across participants.
+  venue's events/tickets). The contention win is also **measured** — a
+  concurrent-issuance benchmark (`integration/client/src/bench.ts`) shows
+  8.7–13.7× from sharding with contention retries dropping to zero, scaling
+  with concurrency. Not yet benchmarked on a multi-core production participant
+  (where the gap widens).
 - **Vendored package ids.** Built against vendored CIP-56 interfaces, not the
   official `splice-api-token-*-v1` releases — interface-compatible, but package
   ids differ until the swap.

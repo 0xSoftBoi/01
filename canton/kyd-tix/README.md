@@ -206,6 +206,13 @@ consumed on a high-frequency path serializes that path and causes retry storms.
 | `Ticket` carried a contract key | Uniqueness checks on the hottest template, for nothing | Dropped — serial uniqueness holds **by construction** (each shard owns a disjoint serial range) |
 | Global per-sale demand curve | Needs a global counter = a synchronization bottleneck (the docs' anti-pattern) | **Step curve over allocations**: each successive shard prices at `base x (1 + allocated x demandBps/10⁴)` — same economics, zero shared state between sales |
 
+**Measured, not just argued.** A concurrent-issuance benchmark
+([`integration/client/src/bench.ts`](integration/client/README.md), one
+command) shows sharding deliver **8.7× at 16 concurrent issues and 13.7× at 24**
+on a single-node sandbox, with per-shard contention retries dropping from 100s
+to **zero** — and the speedup grows with concurrency, exactly as the model
+predicts. See [`integration/`](integration/README.md#contention-benchmark-clientsrcbenchts).
+
 **Upgrade readiness (SCU):** built with `--target=1.17` and `daml-script-lts`,
 which enables [Smart Contract Upgrade](https://docs.daml.com/upgrade/smart-contract-upgrades.html)
 on Canton protocol 7 — future package versions can append `Optional` fields and

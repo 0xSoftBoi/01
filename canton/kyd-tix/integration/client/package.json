@@ -6,7 +6,8 @@
   "scripts": {
     "codegen": "../codegen.sh",
     "build": "tsc",
-    "start": "ts-node src/buyTicket.ts"
+    "start": "ts-node src/buyTicket.ts",
+    "bench": "ts-node src/bench.ts"
   },
   "dependencies": {
     "@daml/ledger": "2.10.4",
