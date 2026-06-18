@@ -3,7 +3,7 @@
 Self-audit of the Daml model in `daml/`, written against the authorization,
 privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
-(8 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
+(9 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
 suppression.
 
@@ -12,7 +12,7 @@ suppression.
 | Party | Powers | Bounded by |
 | --- | --- | --- |
 | **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, comp-issue tickets, reprice, rewrite the lender register (KYD-01), or refund escrow unilaterally |
-| **Venue** | Opens allocations, comps, repricing, raises financing, distributes repayments | Cannot self-fill paid orders, touch the carved-out financing share, or refund escrow unilaterally |
+| **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, or comp/reprice without the operator (KYD-08) |
 | **Artist** | Co-signs events; repricing; receives royalties | Cannot issue, spend, or alter financing |
 | **Fan** | Signs purchase orders (authorizing exactly one payment); owns tickets | Resale gated by price cap; redeemed tickets non-transferable |
 | **Lender** | Commits/uncommits to raises; trades tranches; receives waterfall payments | KYC-gated (membership); cannot touch tickets, events, or other lenders' positions |
@@ -94,12 +94,64 @@ detection), where KYD already operates. The consent flow (propose/accept) and
 redeemed-ticket guard are enforced on-ledger.
 Verified by `testGiftFlow` and `testGiftAndRefundSecurity`.
 
+### KYD-08 — A financed venue could starve its lenders (HIGH, fixed)
+
+TIX's whole premise is that *ticket revenue automatically enforces repayment* —
+each paid sale carves a `RevenueShare` for the syndicate. But the venue
+controlled three issuance levers **unilaterally**, each a way to route around
+that capture:
+
+1. **Comp the house** — `Allocation_Issue` mints tickets with **no**
+   revenue-share carve-out. A venue that had raised TIX financing could comp its
+   entire inventory and sell it off-ledger, so zero revenue ever reached the
+   loan.
+2. **Reprice to ~0** — `Allocation_Reprice` set a shard's price to `0.01`, so
+   paid sales carve almost nothing.
+3. **Drop the tier base price** — `Event_SetTierBasePrice`, same effect at the
+   policy level.
+
+None of these required operator dishonesty — the *venue* could defeat the core
+value proposition and leave lenders holding an (only late-interest-enforced)
+maturity claim. **Fixed** by requiring the operator — the lenders' agent — to
+co-sign every issuance economics lever: `Allocation_Issue`,
+`Allocation_Reprice` and `Event_SetTierBasePrice` are now jointly controlled by
+`operator` and the venue/artist. The platform can therefore hold a financed
+venue's comps and price changes to the financing terms. Paid sales (the hot
+path) are unchanged. The residual off-ledger-resale-of-comps risk is the same
+class as KYD-07 and is an app-layer control.
+Verified by `testFinancedVenueCannotStarveLenders` (venue/artist alone cannot
+comp or reprice; the operator co-signed path works).
+
+### KYD-09 — Open order book leaks committed lenders (MEDIUM, open)
+
+`OpenFinancingOffering` is observed by the well-known `public` party for
+discovery, but its `commitments` list (each lender's identity and amount) is on
+the same contract — so any participant reading the public book sees **who**
+committed and **how much**, a confidentiality concern for syndicated credit.
+*Mitigation plan:* split discovery from the commitment ledger — a public
+"teaser" contract carrying only the terms and remaining capacity, with the
+commitment records observed solely by `operator`, `venue` and the committed
+lenders. (The targeted `FinancingOffering` is unaffected; its observers are the
+invited lenders only.)
+
+### KYD-10 — Venue can redeem tickets unilaterally, anytime (MEDIUM, open)
+
+`Ticket_CheckIn` is `controller venue` with no time bound, so a venue (or a
+compromised venue key) can mark any outstanding ticket `redeemed` **before the
+event**, destroying its resale value and griefing fans. On-ledger this mirrors
+the physical turnstile, but the lack of a time window is a defense-in-depth
+gap. *Mitigation plan:* denormalize `eventTime` onto `TierAllocation` and
+`Ticket` (no new module dependency / import cycle) and bound check-in to a
+doors window — `assert now >= eventTime - grace` — so tickets cannot be burned
+days early.
+
 ## Attack coverage (`daml/Kyd/SecurityTest.daml`)
 
 | Suite | Attacks proven impossible |
 | --- | --- |
 | `testCashSecurity` | Forged issuance; third-party/operator theft of owner cash; overdraft splits; cross-owner merges |
-| `testIssuanceAuthorization` | Non-venue allocation opening; operator comp-minting; operator repricing; venue self-filling paid orders |
+| `testIssuanceAuthorization` | Non-venue allocation opening; comp-minting or repricing by operator/venue/artist *alone* (both required, KYD-08); venue self-filling paid orders |
+| `testFinancedVenueCannotStarveLenders` | A financed venue comping the house or repricing to ~0 unilaterally (KYD-08) — all three economic levers blocked without the operator |
 | `testReceiptCustody` | Unilateral refund by venue or operator; venue exercising release |
 | `testRegisterIntegrity` | Operator rewriting the register alone (KYD-01); phantom sellers; buyer withdrawing a seller's offer; seller accepting for the buyer |
 | `testForeignReceiptRejected` | Sweeping one event's receipts through another event's loan |

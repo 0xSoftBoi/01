@@ -46,10 +46,13 @@ testIssuanceAuthorization = do
   submitMustFail c.artist $ exerciseCmd ev (Event_OpenAllocation with tierId = "GA", size = 1)
   submitMustFail c.operator $ exerciseCmd ev (Event_OpenAllocation with tierId = "GA", size = 1)
   (_ev1, alloc) <- openGA c ev 2
-  -- Only the venue comp-issues; the operator cannot mint comps.
+  -- Comps need BOTH operator and venue (audit KYD-08): neither alone suffices.
   submitMustFail c.operator $ exerciseCmd alloc (Allocation_Issue with fan = c.operator)
-  -- The operator cannot reprice a shard (only venue or artist).
+  submitMustFail c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  -- Repricing needs the operator AND a venue/artist repricer; the operator
+  -- alone (claiming to be the repricer) is rejected, as is a venue/artist alone.
   submitMustFail c.operator $ exerciseCmd alloc (Allocation_Reprice with repricer = c.operator, newPrice = 1.0)
+  submitMustFail c.venue $ exerciseCmd alloc (Allocation_Reprice with repricer = c.venue, newPrice = 1.0)
   -- Only the operator fills purchase orders (the venue cannot self-fill).
   n50 <- mint c c.alice 50.0
   order <- submit c.alice $ createCmd PurchaseOrder with
@@ -122,7 +125,7 @@ testResaleSecurity = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   offer <- submit c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 70.0)
   -- The ticket is locked-by-archiving: it cannot be offered a second time.
   submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.lender, salePrice = 70.0)
@@ -163,7 +166,7 @@ testGiftAndRefundSecurity = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 2
-  (Some alloc2, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (Some alloc2, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   -- Only the owner can gift; self-gifts are rejected.
   submitMustFail c.bob $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
   submitMustFail c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.alice)
@@ -177,7 +180,7 @@ testGiftAndRefundSecurity = do
   submitMustFail c.venue $ exerciseCmd t1b (Ticket_Refund with cashCid = nWrong)
   nAlice <- mint c c.alice 50.0
   submitMustFail c.alice $ exerciseCmd t1b (Ticket_Refund with cashCid = nAlice)
-  (None, t2) <- submit c.venue $ exerciseCmd alloc2 (Allocation_Issue with fan = c.bob)
+  (None, t2) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc2 (Allocation_Issue with fan = c.bob)
   t2r <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
   nOk <- mint c c.venue 50.0
   submitMustFail c.venue $ exerciseCmd t2r (Ticket_Refund with cashCid = nOk)
@@ -211,3 +214,31 @@ testCommittedFundsLockedInPlace = do
   locked.owner === c.lender   -- the lender still owns it
   submitMustFail c.lender $ exerciseCmd lockedCid (Cash_Transfer with newOwner = c.bob)
   submitMustFail c.lender $ exerciseCmd lockedCid (Cash_Split with splitAmount = 100.0)
+
+-- 10. Financing integrity (audit KYD-08): a financed venue cannot starve its
+--     lenders by routing around revenue capture. The venue alone can neither
+--     comp the house (no revenue-share) nor drop prices to ~0 — both economic
+--     levers require the operator (the lenders' agent) to co-sign. With the
+--     operator co-signing, the legitimate operations still work.
+testFinancedVenueCannotStarveLenders : Script ()
+testFinancedVenueCannotStarveLenders = do
+  c <- setupCast
+  (_loan, _) <- setupLoan c   -- a live TIX facility against SHOW-001
+  [(ev, _)] <- query @Event c.venue
+  (ev1, alloc) <- openGA c ev 5
+
+  -- Attack 1: comp the whole house (zero revenue-share) — venue alone fails.
+  submitMustFail c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  -- Attack 2: reprice the shard to ~0 so paid sales carve almost nothing —
+  -- venue alone fails; so does artist alone.
+  submitMustFail c.venue $ exerciseCmd alloc (Allocation_Reprice with repricer = c.venue, newPrice = 0.01)
+  submitMustFail c.artist $ exerciseCmd alloc (Allocation_Reprice with repricer = c.artist, newPrice = 0.01)
+  -- Attack 3: drop the tier base price unilaterally — venue alone fails.
+  submitMustFail c.venue $ exerciseCmd ev1
+    (Event_SetTierBasePrice with repricer = c.venue, tierId = "GA", newBasePrice = 0.01)
+
+  -- With the operator (lenders' agent) co-signing, the legitimate path works:
+  -- reprice the shard, then issue a comp from the repriced shard.
+  alloc2 <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Reprice with repricer = c.venue, newPrice = 55.0)
+  (Some _, _) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc2 (Allocation_Issue with fan = c.alice)
+  pure ()
