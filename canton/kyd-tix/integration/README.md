@@ -62,6 +62,35 @@ KYD_FAN_TOKEN=... KYD_OPERATOR_PARTY=... KYD_VENUE_PARTY=... KYD_FAN_PARTY=... \
   npm start             # places an order; the trigger fills it
 ```
 
+## Contention benchmark (`client/src/bench.ts`)
+
+Turns the cold-master / hot-shard *argument* into a *measured number*. It fires
+the same concurrent issuance load two ways and compares throughput:
+
+- **1 shard** — N concurrent `Allocation_Issue` against ONE `TierAllocation`.
+  Each is a consuming choice, so they contend on one contract; Canton serializes
+  them and the client retries on the stale-cid rejections.
+- **N shards** — N concurrent issues, one per shard. Disjoint contracts, no
+  contention — they commit in parallel.
+
+Measured on a local single-node sandbox (`npm run bench -- <concurrency>`):
+
+| Concurrent issues | 1 shard | N shards | Speedup | Contention retries |
+| --- | --- | --- | --- | --- |
+| 16 | 3.8 issues/s | 32.7 issues/s | **8.7×** | 113 → **0** |
+| 24 | 2.5 issues/s | 34.6 issues/s | **13.7×** | 258 → **0** |
+
+The speedup *grows* with concurrency (more contention on the single shard), and
+sharding eliminates contention retries entirely — exactly what the architecture
+predicts. A multi-core participant widens the gap further; this is the
+contention floor, not the ceiling.
+
+```
+./run-local.sh            # (or a bare sandbox + seed + JSON API)
+cd client && npm run codegen && npm install
+npm run bench -- 24       # 24 concurrent issues, 1-shard vs 24-shard
+```
+
 ## What is verified here vs. operational
 
 - **Verified in this environment**: triggers compile into the DAR and are listed
