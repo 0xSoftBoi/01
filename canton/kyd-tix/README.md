@@ -9,8 +9,8 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **28 scenarios** pass on Daml SDK
-**2.10.4** — functional (incl. gifting and venue refunds), an 8-suite
+It builds (LF 1.17, SCU-ready) and all **33 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), a 9-suite
 adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
 and 4 suites driving DvP settlement, free-of-payment transfer and lock-in-place
 custody through the **real CIP-56 token-standard
@@ -30,7 +30,7 @@ automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-make test     # both Daml packages + all 28 scenarios
+make test     # both Daml packages + all 33 scenarios
 make app      # typed bindings + web app production build
 make demo     # sandbox + demo seed + JSON API + triggers
 cd app && npm run dev           # the product UI (PWA-installable)

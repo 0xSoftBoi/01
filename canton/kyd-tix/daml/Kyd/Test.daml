@@ -97,7 +97,7 @@ testPrimarySale = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 5
-  (Some alloc1, _t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (Some alloc1, _t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   Some alloc1Data <- queryContractId c.operator alloc1
   alloc1Data.sold === 1
   aliceTickets <- query @Ticket c.alice
@@ -110,7 +110,7 @@ testResaleWithRoyalty = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
 
   -- Buyer is funded with exactly the 70 sale price.
   cash <- mint c c.bob 70.0
@@ -135,7 +135,7 @@ testResaleCapEnforced = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   -- Cap is 75; offering at 100 must fail.
   submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 100.0)
 
@@ -145,7 +145,7 @@ testRedeemedCannotResell = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   t1r <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
   submitMustFail c.alice $ exerciseCmd t1r (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
 
@@ -436,7 +436,7 @@ testTieredDynamicPricing = do
   _t4 <- buy c c.bob "SHOW-002" "VIP" vip1 100.0
   (_ev5, vip2) <- openTier ev4 "VIP" 1
   submitMustFail c.bob $ exerciseCmd vip2 (Allocation_Reprice with repricer = c.bob, newPrice = 1.0)
-  vip2' <- submit c.artist $ exerciseCmd vip2 (Allocation_Reprice with repricer = c.artist, newPrice = 80.0)
+  vip2' <- submitMulti [c.operator, c.artist] [] $ exerciseCmd vip2 (Allocation_Reprice with repricer = c.artist, newPrice = 80.0)
   _t5 <- buy c c.alice "SHOW-002" "VIP" vip2' 80.0
 
   -- Venue collected every primary sale: 50 + 51 + 52 + 100 + 80 = 333.
@@ -456,8 +456,8 @@ testParallelShards = do
   -- Sell from B first, then A: neither exercise references the other shard or
   -- the master, so on Canton these submissions commute (no write-write
   -- contention).
-  (Some _, tB) <- submit c.venue $ exerciseCmd shardB (Allocation_Issue with fan = c.bob)
-  (Some _, tA) <- submit c.venue $ exerciseCmd shardA (Allocation_Issue with fan = c.alice)
+  (Some _, tB) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd shardB (Allocation_Issue with fan = c.bob)
+  (Some _, tA) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd shardA (Allocation_Issue with fan = c.alice)
   Some tBData <- queryContractId c.operator tB
   Some tAData <- queryContractId c.operator tA
   tBData.serial === 3
@@ -570,7 +570,7 @@ testGiftFlow = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   gift <- submit c.alice $ exerciseCmd t1 (Ticket_OfferGift with recipient = c.bob)
   -- Locked: the archived ticket cannot also be listed for sale.
   submitMustFail c.alice $ exerciseCmd t1 (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
@@ -590,7 +590,7 @@ testRefund = do
   c <- setupCast
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
-  (None, t1) <- submit c.venue $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
   n50 <- mint c c.venue 50.0
   _ <- submit c.venue $ exerciseCmd t1 (Ticket_Refund with cashCid = n50)
   aliceBal <- cashOf c.alice

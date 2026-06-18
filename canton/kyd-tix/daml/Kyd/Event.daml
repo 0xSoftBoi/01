@@ -133,13 +133,17 @@ template Event
           _ -> abort ("unknown tier: " <> tierId)
 
     -- | Manual dynamic pricing at the policy level: venue or artist moves a
-    --   tier's base price; future allocations price off the new base.
+    --   tier's base price; future allocations price off the new base. The
+    --   operator co-signs (audit KYD-08): pricing is a revenue lever, and a
+    --   venue that has raised TIX financing must not be able to drop prices to
+    --   ~0 unilaterally and starve its lenders — the operator, as the lenders'
+    --   agent, attests the change is within the financing terms.
     choice Event_SetTierBasePrice : ContractId Event
       with
         repricer : Party
         tierId : Text
         newBasePrice : Decimal
-      controller repricer
+      controller operator, repricer
       do
         assertMsg "only the venue or the artist may reprice"
           (repricer == venue || repricer == artist)
@@ -173,10 +177,15 @@ template TierAllocation
         && financingShareBps >= 0 && financingShareBps <= 10000
         && serialBase > 0
 
-    -- | Unpaid issuance (comps, door sales settled off-ledger).
+    -- | Unpaid issuance (comps, guest list). The operator co-signs (audit
+    --   KYD-08): a comp produces no revenue-share, so a financed venue could
+    --   otherwise comp the whole house and sell off-ledger, routing around the
+    --   revenue capture that repays its lenders. Requiring the operator (the
+    --   lenders' agent) on every comp lets the platform hold comps to the
+    --   financing terms. Paid sales (the hot path) are unaffected.
     choice Allocation_Issue : (Optional (ContractId TierAllocation), ContractId Ticket)
       with fan : Party
-      controller venue
+      controller operator, venue
       do mintFromAllocation this fan
 
     -- | Paid primary sale, driven by the operator's sales engine. The payment
@@ -214,12 +223,13 @@ template TierAllocation
         mintFromAllocation this fan
 
     -- | Manual dynamic pricing at the shard level: venue or artist reprices
-    --   the unsold remainder of this block.
+    --   the unsold remainder of this block. Operator co-signs (audit KYD-08),
+    --   for the same lender-protection reason as the base-price lever.
     choice Allocation_Reprice : ContractId TierAllocation
       with
         repricer : Party
         newPrice : Decimal
-      controller repricer
+      controller operator, repricer
       do
         assertMsg "only the venue or the artist may reprice"
           (repricer == venue || repricer == artist)
