@@ -1,0 +1,85 @@
+-- | The FULL KYD app on a real two-participant Canton network — not just the
+--   Cash privacy primitive. Runs the engineered issuance path (cold-master /
+--   hot-shard), a paid primary sale via the operator's fill, and a
+--   cross-participant gift, while proving that a competing venue and fans on a
+--   separate participant (p2) never see another venue's private events,
+--   inventory or tickets (p1).
+--
+--   This validates that the contention architecture and privacy model hold on
+--   real Canton, with realistic party hosting. Every assertion is race-free
+--   (queries are local to the queried party's own participant).
+module AppOnCanton where
+
+import Daml.Script
+import DA.Date (date, Month(..))
+import DA.Time (time)
+
+import Kyd.Cash
+import Kyd.Event
+import Kyd.Ticket
+import PrivacyProof (Ping(..))
+
+appOnCanton : Script ()
+appOnCanton = do
+  let p1 = ParticipantName "p1"   -- KYD platform + Venue A's org + its fans
+      p2 = ParticipantName "p2"   -- a competing Venue B's org + its fans
+
+  operator <- allocatePartyOn "KYD-Operator" p1
+  venueA   <- allocatePartyOn "Venue-A" p1
+  artistA  <- allocatePartyOn "Artist-A" p1
+  alice    <- allocatePartyOn "Alice" p1
+  venueB   <- allocatePartyOn "Venue-B" p2
+  bob      <- allocatePartyOn "Bob" p2
+
+  -- Venue A runs a show on p1: cold Event master + a hot GA allocation shard.
+  ev <- submitMulti [operator, venueA, artistA] [] $ createCmd Event with
+    operator, venue = venueA, artist = artistA
+    eventId = "SHOW-A"
+    name = "Venue A — Private Show"
+    eventTime = time (date 2026 Sep 1) 20 0 0
+    royaltyBps = 1000
+    financingShareBps = 0
+    tiers = [Tier with tierId = "GA", basePrice = 50.0, demandBps = 0, resaleCapBps = 15000, supply = 100, allocated = 0]
+  (ev1, alloc) <- submit venueA $ exerciseCmd ev (Event_OpenAllocation with tierId = "GA", size = 5)
+
+  -- Alice (a p1 fan) buys via the standard paid-sale path: signed order, the
+  -- operator's engine fills it atomically.
+  aliceCash <- submit operator $ createCmd Cash with
+    operator, owner = alice, amount = 50.0, lock = None, observers = []
+  order <- submit alice $ createCmd PurchaseOrder with
+    operator, venue = venueA, fan = alice, eventId = "SHOW-A", tierId = "GA", cashCid = aliceCash
+  (_, aliceTicket) <- submit operator $ exerciseCmd order (PurchaseOrder_Fill with allocationCid = alloc)
+
+  -- Sanity: Venue A's own node sees its (recreated) event master and the ticket.
+  Some _ <- queryContractId venueA ev1
+  Some t <- queryContractId operator aliceTicket
+  assertMsg "ticket issued to Alice" (t.owner == alice)
+
+  -- PRIVACY on the real business contracts. Venue B and Bob, hosted on a
+  -- separate participant, never received any of Venue A's private data.
+  venueBEvents <- query @Event venueB
+  assertMsg "a competing venue's node must not hold Venue A's event"
+    (not (any (\(_, e) -> e.eventId == "SHOW-A") venueBEvents))
+  bobAllocs <- query @TierAllocation bob
+  assertMsg "p2 must not hold Venue A's inventory shards" (null bobAllocs)
+  bobTickets <- query @Ticket bob
+  assertMsg "p2 must not hold Alice's ticket" (null bobTickets)
+  None <- queryContractId bob aliceTicket
+
+  -- p2 is a live participant (Bob transacts on his own node), not merely blind.
+  ping <- submit bob $ createCmd Ping with owner = bob
+  Some _ <- queryContractId bob ping
+
+  -- Cross-participant ticket movement: Alice (p1) gifts her ticket to Bob (p2).
+  -- The submit committing proves p1 and p2 are domain-connected and that Bob's
+  -- node received the offer as the named recipient; assert race-free from p1.
+  gift <- submit alice $ exerciseCmd aliceTicket (Ticket_OfferGift with recipient = bob)
+  Some g <- queryContractId operator gift
+  assertMsg "gift offer addressed to Bob on the other participant"
+    (g.recipient == bob)
+
+  debug "FULL APP PROVEN on a real 2-participant Canton network:"
+  debug "  - sharded issuance + paid fill run on real Canton, not sandbox"
+  debug "  - a competing venue / fans on p2 never see Venue A's events, shards or tickets"
+  debug "  - cross-participant ticket gift commits across the domain"
+  pure ()

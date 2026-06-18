@@ -1,13 +1,18 @@
-# Multi-participant privacy proof
+# Multi-participant proofs on real Canton
 
-Canton's headline guarantee is **participant-level sub-transaction privacy**:
-each participant node only ever receives the parts of a transaction its hosted
-parties are stakeholders of. The rest of this repo verifies behaviour on the
-single-participant test runner; this package proves the privacy property on a
-**real two-participant Canton network**.
+The rest of this repo verifies behaviour on the single-participant test runner.
+This package proves, on a **real two-participant + one-domain Canton network**
+(the bundled Canton, not sandbox), two things:
+
+1. **`PrivacyProof`** — Canton's headline guarantee, participant-level
+   sub-transaction privacy, on the `Cash` primitive.
+2. **`AppOnCanton`** — the FULL KYD app (cold-master/hot-shard issuance, a paid
+   primary sale via the operator's fill, a cross-participant gift) running on
+   real Canton, proving a competing venue and fans on a separate participant
+   never see another venue's events, inventory or tickets.
 
 ```
-./run.sh        # builds, boots 2 participants + 1 domain, uploads, runs the proof
+./run.sh        # builds, boots 2 participants + 1 domain, uploads, runs both proofs
 ```
 
 ## Topology (`canton.conf`)
@@ -53,6 +58,24 @@ PASS — participant-level privacy proven on real Canton
 
 The Daml Script exits 0 only if every assertion holds — including that Bob's
 live participant returns `None` for Alice's contract and that his ACS is empty.
+
+## The full app on real Canton (`daml/AppOnCanton.daml`)
+
+Realistic hosting: the KYD platform, Venue A, its artist and a fan (Alice) are
+on `p1`; a competing Venue B and another fan (Bob) are on `p2`. The script runs
+the real product flow — Venue A creates an event, carves a hot `TierAllocation`
+shard off the cold `Event` master, Alice places a `PurchaseOrder` and the
+operator's engine fills it — entirely on real Canton, then asserts (race-free):
+
+- the competing venue's node holds **none** of Venue A's `Event`s;
+- `p2` holds **none** of Venue A's inventory shards or Alice's `Ticket`;
+- `p2` is live (Bob transacts on his own node);
+- a cross-participant **gift** (Alice on p1 → Bob on p2) commits across the
+  domain.
+
+This validates that the contention architecture *and* the privacy model hold on
+real multi-participant Canton — not just the in-memory runner. Both proofs run
+deterministically (verified across repeated runs, script exit 0).
 
 ## Why it's a separate package
 

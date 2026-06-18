@@ -22,7 +22,7 @@ every push touching this tree.
 | Layer | Verification |
 | --- | --- |
 | Daml model (`daml/`) | 32 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
-| Multi-participant privacy (`privacy-proof/`) | **Proven on a real 2-participant + 1-domain Canton network** (`./run.sh`): a p1-only contract is provably absent from a live p2 node. Race-free Daml Script, 3 deterministic passes. Not in CI (needs a running Canton); run on demand. |
+| Multi-participant on real Canton (`privacy-proof/`) | **Proven on a real 2-participant + 1-domain Canton network** (`./run.sh`): the `Cash` privacy primitive AND the full app (sharded issuance, paid sale, cross-participant gift) — a competing venue's node holds none of another venue's events/tickets. Race-free, deterministic. Not in CI (needs a running Canton); run on demand. |
 | Web app (`app/`) | Type-check + production build in CI. The full runtime loop (JWT → catalog → split → order → trigger fill → pass; financing receipt escrowed) was driven over HTTP against the running stack during development. |
 | Triggers (`Kyd.Triggers`) | Compile into the DAR; listed by the runner; fills exercised end-to-end in the runtime loop above. |
 | CIP-56 integration | `Cash` implements `Holding`; `Kyd.Registry` implements the standard `TransferFactory`/`AllocationFactory`/`Allocation`. Resale + transfers tested through these real factories. NOT yet run against live Canton Coin/USDCx package ids (swap the vendored DAR for the official releases). |
