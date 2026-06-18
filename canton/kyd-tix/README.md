@@ -216,9 +216,12 @@ only their tickets; a lender only their syndicates), escrow visibility is
 explicit via `Cash` disclosure (no deprecated divulgence anywhere — the test
 suite runs warning-free), and the open order book uses the public-party
 broadcast pattern rather than widening observers on business contracts. This
-is **proven on a real two-participant Canton network** — a p1-only contract is
-provably absent from a live p2 node — in [`privacy-proof/`](privacy-proof/README.md)
-(`./run.sh`, race-free, 3 deterministic passes).
+is **proven on a real two-participant Canton network** in
+[`privacy-proof/`](privacy-proof/README.md) (`./run.sh`, race-free,
+deterministic): both the `Cash` privacy primitive *and* the **full app** — a
+competing venue and fans on a separate participant never see another venue's
+events, inventory or tickets, while sharded issuance, a paid sale and a
+cross-participant gift run on real Canton.
 
 ### Targeted vs. open financing (the public-party pattern)
 

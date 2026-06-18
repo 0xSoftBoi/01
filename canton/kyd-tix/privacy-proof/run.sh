@@ -26,8 +26,12 @@ echo "3/5  uploading the DAR to participant p1 and participant p2"
 daml ledger upload-dar --host localhost --port 6011 "$DAR"
 daml ledger upload-dar --host localhost --port 6021 "$DAR"
 
-echo "4/5  running the cross-participant privacy proof"
+echo "4/5  running the cross-participant privacy proof (Cash primitive)"
 daml script --dar "$DAR" --script-name PrivacyProof:privacyProof \
   --participant-config participants.json
 
-echo "5/5  PASS — participant-level privacy proven on real Canton"
+echo "5/5  running the FULL app proof (events, sharded issuance, paid sale, gift)"
+daml script --dar "$DAR" --script-name AppOnCanton:appOnCanton \
+  --participant-config participants.json
+
+echo "PASS — privacy + the full KYD app proven on real multi-participant Canton"
