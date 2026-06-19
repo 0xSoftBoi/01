@@ -134,7 +134,7 @@ DAML patterns used: **propose/accept** (onboarding, resale), **lock-by-archiving
 | `Kyd.Registry` | `KydTransferFactory`, `KydAllocationFactory`, `KydAllocation` | The CIP-56 registry over `Cash`: standard transfer/allocation factories (Canton Coin's Amulet architecture) |
 | `splice-token-standard/` | vendored `Splice.Api.Token.{MetadataV1,HoldingV1,AllocationV1}` | The CIP-56 interfaces (separate package, as SCU requires) |
 | `Kyd.Settlement` | `RevenueShare` | Escrowed financing carve-outs (contention decoupling) |
-| `Kyd.Tix` | `FinancingOffering`, `OpenFinancingOffering`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, batch sweep, tranche secondary market |
+| `Kyd.Tix` | `FinancingOffering`, `OpenOfferingListing` + private `OpenCommitment`, `SyndicatedLoan`, `TrancheOffer` | The TIX financing/settlement program: invited + open-book raises, batch sweep, tranche secondary market |
 | `Kyd.Triggers` | `autoFillOrders`, `sweepRevenue`, `accrueLateInterest` | Operator automation (off-ledger Daml Triggers) — see `integration/` |
 
 ### Lifecycle
@@ -160,7 +160,7 @@ ResaleOffer.Accept(cash):                                (atomic DvP)
 Ticket.Ticket_CheckIn -> redeemed (resale now blocked)   (door scan)
 
 venue+operator: FinancingOffering (invited lenders)      (TIX: targeted raise)
-              | OpenFinancingOffering (observer: public)  (TIX: open order book)
+              | OpenOfferingListing (public: terms only)   (TIX: open order book)
 Offering_Commit(cash) per lender --> lock-in-place        (lender keeps custody)
   open book: any lender holding a Lender membership       (KYC gate, no invite)
              reads `public` to discover and commit
@@ -233,14 +233,17 @@ cross-participant gift run on real Canton.
 ### Targeted vs. open financing (the public-party pattern)
 
 A contract is only visible to its stakeholders, so an *open* raise needs a way
-for unknown lenders to discover it. `OpenFinancingOffering` is observed by a
+for unknown lenders to discover it. `OpenOfferingListing` is observed by a
 well-known **`public`** party that every onboarded lender reads (`readAs`),
-forming a public order book — the standard Canton broadcast pattern. Eligibility
-moves from an invite list to **on-ledger credentials**: `OpenOffering_Commit`
-looks up the committer's `Lender` membership (`Kyd.Roles`) as a KYC gate, so
-anyone with a credential can fund and nobody else can. Both paths converge on
-the same `SyndicatedLoan`, so settlement, the waterfall and the tranche market
-are identical downstream.
+forming a public order book — the standard Canton broadcast pattern. But
+discovery is split from the commitment ledger (audit KYD-09): the public
+listing carries only the **terms and the aggregate `raised`**, while each
+lender's commitment is a separate, private `OpenCommitment` visible only to the
+operator, venue and that lender — so the book never leaks *who* committed or
+*how much*. Eligibility moves from an invite list to **on-ledger credentials**:
+`Listing_Commit` looks up the committer's `Lender` membership (`Kyd.Roles`) as a
+KYC gate. Both paths converge on the same `SyndicatedLoan`, so settlement, the
+waterfall and the tranche market are identical downstream.
 
 ### TIX worked example (from `testSyndicatedFinancing`)
 

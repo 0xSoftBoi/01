@@ -532,7 +532,7 @@ testOpenOrderBook = do
   onboard c c.lender2 Lender
 
   -- Venue opens a 1,000 raise to the public book (no invite list).
-  off <- submitMulti [c.operator, c.venue] [] $ createCmd OpenFinancingOffering with
+  off <- submitMulti [c.operator, c.venue] [] $ createCmd OpenOfferingListing with
     operator = c.operator
     venue = c.venue
     public = c.public
@@ -542,27 +542,39 @@ testOpenOrderBook = do
     revenueShareBps = 5000
     dueDate = time (date 2026 Aug 1) 0 0 0
     lateInterestBpsPerDay = 10
-    commitments = []
+    raised = 0.0
 
   -- A non-onboarded party reading the public book still cannot commit.
   nAlice <- mint c c.alice 100.0
   submitMultiMustFail [c.alice] [c.public] $
-    exerciseCmd off (OpenOffering_Commit with lender = c.alice, cashCid = nAlice)
+    exerciseCmd off (Listing_Commit with lender = c.alice, cashCid = nAlice)
 
   -- Onboarded lenders discover the book via readAs public and commit 600 / 400.
+  -- Each commitment is a PRIVATE OpenCommitment; the listing only sees totals.
   n600 <- mint c c.lender 600.0
-  off2 <- submitMulti [c.lender] [c.public] $
-    exerciseCmd off (OpenOffering_Commit with lender = c.lender, cashCid = n600)
+  (off2, com1) <- submitMulti [c.lender] [c.public] $
+    exerciseCmd off (Listing_Commit with lender = c.lender, cashCid = n600)
   n400 <- mint c c.lender2 400.0
-  off3 <- submitMulti [c.lender2] [c.public] $
-    exerciseCmd off2 (OpenOffering_Commit with lender = c.lender2, cashCid = n400)
+  (off3, com2) <- submitMulti [c.lender2] [c.public] $
+    exerciseCmd off2 (Listing_Commit with lender = c.lender2, cashCid = n400)
+
+  -- KYD-09: the public party sees the aggregate raised but NOT who committed —
+  -- it cannot see any OpenCommitment (lender identities / amounts are private).
+  Some off3Data <- queryContractId c.operator off3
+  off3Data.raised === 1000.0
+  publicCommitments <- query @OpenCommitment c.public
+  length publicCommitments === 0
+  -- Each lender sees only its own commitment.
+  lenderCommitments <- query @OpenCommitment c.lender
+  length lenderCommitments === 1
 
   -- Fully subscribed: activation pays the venue 1,000 and books the loan.
-  (loan, _proceeds) <- submit c.venue $ exerciseCmd off3 OpenOffering_Activate
+  (loan, _proceeds) <- submit c.venue $
+    exerciseCmd off3 (Listing_Activate with commitmentCids = [com1, com2])
   venueBal <- cashOf c.venue
   venueBal === 1000.0
   Some loanData <- queryContractId c.operator loan
-  loanData.tranches === [Tranche c.lender2 440.0, Tranche c.lender 660.0]
+  loanData.tranches === [Tranche c.lender 660.0, Tranche c.lender2 440.0]
 
 -- 15. Gifting: free transfer with the recipient's consent; the ticket is
 --     locked while the offer is open; decline hands it back.

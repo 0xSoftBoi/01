@@ -5,7 +5,8 @@ privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
 (11 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
-suppression.
+suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10) are
+fixed/resolved**; the remaining items are LOW/INFO (by-design or accepted).
 
 ## Trust model
 
@@ -122,17 +123,20 @@ class as KYD-07 and is an app-layer control.
 Verified by `testFinancedVenueCannotStarveLenders` (venue/artist alone cannot
 comp or reprice; the operator co-signed path works).
 
-### KYD-09 — Open order book leaks committed lenders (MEDIUM, open)
+### KYD-09 — Open order book leaked committed lenders (MEDIUM, fixed)
 
-`OpenFinancingOffering` is observed by the well-known `public` party for
-discovery, but its `commitments` list (each lender's identity and amount) is on
-the same contract — so any participant reading the public book sees **who**
-committed and **how much**, a confidentiality concern for syndicated credit.
-*Mitigation plan:* split discovery from the commitment ledger — a public
-"teaser" contract carrying only the terms and remaining capacity, with the
-commitment records observed solely by `operator`, `venue` and the committed
-lenders. (The targeted `FinancingOffering` is unaffected; its observers are the
-invited lenders only.)
+The open raise was a single `OpenFinancingOffering` observed by the `public`
+party, with the `commitments` list (each lender's identity and amount) on the
+same contract — so any participant reading the public book saw **who** committed
+and **how much**, a confidentiality concern for syndicated credit. **Fixed** by
+splitting discovery from the commitment ledger: `OpenOfferingListing` (observed
+by `public`) carries only the terms and the aggregate `raised`, while each
+lender's commitment is a separate, private `OpenCommitment` (signatory operator
++ lender, observer venue) the public party never sees. Activation gathers the
+private commitments. The targeted `FinancingOffering` is unchanged (its
+observers are the invited lenders only).
+Verified by `testOpenOrderBook` (the public party's `OpenCommitment` query is
+empty; each lender sees only its own; the aggregate is the only public figure).
 
 ### KYD-10 — Venue could redeem tickets unilaterally, anytime (MEDIUM, fixed)
 
