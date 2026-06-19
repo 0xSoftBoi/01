@@ -146,6 +146,7 @@ testRedeemedCannotResell = do
   ev <- makeEvent c
   (_ev1, alloc) <- openGA c ev 1
   (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  setTime (time (date 2026 Jul 4) 20 0 0)   -- showtime: within the doors window
   t1r <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
   submitMustFail c.alice $ exerciseCmd t1r (Ticket_Offer with buyer = c.bob, salePrice = 50.0)
 

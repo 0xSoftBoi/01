@@ -139,6 +139,7 @@ testResaleSecurity = do
   -- Settle legitimately, then: only the venue checks in, and only once.
   nOk <- mint c c.bob 70.0
   t2 <- submit c.bob $ exerciseCmd offer (ResaleOffer_Accept with cashCid = nOk)
+  setTime (time (date 2026 Jul 4) 20 0 0)   -- showtime: within the doors window
   submitMustFail c.bob $ exerciseCmd t2 Ticket_CheckIn
   t3 <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
   submitMustFail c.venue $ exerciseCmd t3 Ticket_CheckIn
@@ -181,6 +182,7 @@ testGiftAndRefundSecurity = do
   nAlice <- mint c c.alice 50.0
   submitMustFail c.alice $ exerciseCmd t1b (Ticket_Refund with cashCid = nAlice)
   (None, t2) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc2 (Allocation_Issue with fan = c.bob)
+  setTime (time (date 2026 Jul 4) 20 0 0)   -- showtime: within the doors window
   t2r <- submit c.venue $ exerciseCmd t2 Ticket_CheckIn
   nOk <- mint c c.venue 50.0
   submitMustFail c.venue $ exerciseCmd t2r (Ticket_Refund with cashCid = nOk)
@@ -241,4 +243,21 @@ testFinancedVenueCannotStarveLenders = do
   -- reprice the shard, then issue a comp from the repriced shard.
   alloc2 <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Reprice with repricer = c.venue, newPrice = 55.0)
   (Some _, _) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc2 (Allocation_Issue with fan = c.alice)
+  pure ()
+
+-- 11. Check-in window (audit KYD-10): a venue cannot burn a ticket days early
+--     to destroy its resale value — check-in is bounded to a doors window. The
+--     same scan succeeds once showtime is near.
+testEarlyCheckInBlocked : Script ()
+testEarlyCheckInBlocked = do
+  c <- setupCast   -- makeEvent's showtime is 2026-07-04 20:00
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 1
+  (None, t1) <- submitMulti [c.operator, c.venue] [] $ exerciseCmd alloc (Allocation_Issue with fan = c.alice)
+  -- Well before the doors window (months early): check-in is rejected.
+  setTime (time (date 2026 Jun 1) 0 0 0)
+  submitMustFail c.venue $ exerciseCmd t1 Ticket_CheckIn
+  -- Within the doors window (showtime): the same scan succeeds.
+  setTime (time (date 2026 Jul 4) 20 0 0)
+  _ <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
   pure ()
