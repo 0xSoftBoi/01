@@ -3,7 +3,7 @@
 Self-audit of the Daml model in `daml/`, written against the authorization,
 privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
-(9 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
+(11 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
 suppression.
 
@@ -12,7 +12,7 @@ suppression.
 | Party | Powers | Bounded by |
 | --- | --- | --- |
 | **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, comp-issue tickets, reprice, rewrite the lender register (KYD-01), or refund escrow unilaterally |
-| **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, or comp/reprice without the operator (KYD-08) |
+| **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, comp/reprice without the operator (KYD-08), or burn tickets early — check-in is bounded to a doors window (KYD-10) |
 | **Artist** | Co-signs events; repricing; receives royalties | Cannot issue, spend, or alter financing |
 | **Fan** | Signs purchase orders (authorizing exactly one payment); owns tickets | Resale gated by price cap; redeemed tickets non-transferable |
 | **Lender** | Commits/uncommits to raises; trades tranches; receives waterfall payments | KYC-gated (membership); cannot touch tickets, events, or other lenders' positions |
@@ -134,16 +134,18 @@ commitment records observed solely by `operator`, `venue` and the committed
 lenders. (The targeted `FinancingOffering` is unaffected; its observers are the
 invited lenders only.)
 
-### KYD-10 — Venue can redeem tickets unilaterally, anytime (MEDIUM, open)
+### KYD-10 — Venue could redeem tickets unilaterally, anytime (MEDIUM, fixed)
 
-`Ticket_CheckIn` is `controller venue` with no time bound, so a venue (or a
-compromised venue key) can mark any outstanding ticket `redeemed` **before the
-event**, destroying its resale value and griefing fans. On-ledger this mirrors
-the physical turnstile, but the lack of a time window is a defense-in-depth
-gap. *Mitigation plan:* denormalize `eventTime` onto `TierAllocation` and
-`Ticket` (no new module dependency / import cycle) and bound check-in to a
-doors window — `assert now >= eventTime - grace` — so tickets cannot be burned
-days early.
+`Ticket_CheckIn` was `controller venue` with no time bound, so a venue (or a
+compromised venue key) could mark any outstanding ticket `redeemed` **before
+the event**, destroying its resale value and griefing fans. **Fixed** by
+denormalizing `eventTime` onto `TierAllocation` and `Ticket` (no new module
+dependency / import cycle) and bounding check-in to a doors window: check-in is
+rejected unless `now` is within `doorsOpen` (12h) of showtime, so tickets
+cannot be burned days early. The door scanner in the app still works (the demo
+seed dates its checkable show "tonight").
+Verified by `testEarlyCheckInBlocked` (months-early check-in rejected; the same
+scan succeeds at showtime).
 
 ## Attack coverage (`daml/Kyd/SecurityTest.daml`)
 
@@ -157,6 +159,7 @@ days early.
 | `testForeignReceiptRejected` | Sweeping one event's receipts through another event's loan |
 | `testResaleSecurity` | Double-listing a ticket; third party accepting an offer; paying with another's note or short amount; non-venue check-in; double check-in |
 | `testRoleForgery` | Self-issued memberships; accepting another party's invitation |
+| `testEarlyCheckInBlocked` | A venue burning a ticket days early to kill its resale value (KYD-10) — check-in bounded to the doors window |
 | `testGiftAndRefundSecurity` | Non-owner gifting; self-gifts; third-party gift acceptance; fan self-refunds; wrong-amount refunds; refunding/gifting redeemed tickets |
 
 ## Residual assumptions

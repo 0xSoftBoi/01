@@ -6,12 +6,17 @@
 module Kyd.Ticket where
 
 import DA.Action (when)
+import DA.Time (RelTime, hours, subTime)
 
 import Splice.Api.Token.AllocationV1
 import Splice.Api.Token.HoldingV1 (InstrumentId)
 import Splice.Api.Token.MetadataV1 (ExtraArgs)
 
 import Kyd.Cash
+
+-- | How long before showtime the venue may start checking tickets in.
+doorsOpen : RelTime
+doorsOpen = hours 12
 
 template Ticket
   with
@@ -20,6 +25,7 @@ template Ticket
     artist : Party
     owner : Party          -- current holder (the fan)
     eventId : Text
+    eventTime : Time       -- showtime; bounds when the venue may check the ticket in
     tierId : Text          -- seating tier this ticket was minted from
     serial : Int
     facePrice : Decimal    -- price actually paid at primary sale
@@ -35,11 +41,19 @@ template Ticket
     -- maintainer-coordination cost on the hottest template for no benefit.
     ensure royaltyBps >= 0 && royaltyBps < 10000 && maxResalePrice >= 0.0
 
-    -- | Door scan. Once redeemed a ticket can no longer be resold.
+    -- | Door scan. Once redeemed a ticket can no longer be resold. Bounded to a
+    --   doors window (audit KYD-10): the venue cannot burn a ticket days early
+    --   to destroy its resale value — check-in is only allowed from `doorsOpen`
+    --   before showtime onward.
     choice Ticket_CheckIn : ContractId Ticket
       controller venue
       do
         assertMsg "ticket already redeemed" (not redeemed)
+        now <- getTime
+        -- now must be within `doorsOpen` of showtime (or past it): the gap
+        -- eventTime - now must not exceed the doors window.
+        assertMsg "too early to check in — before the doors window"
+          (subTime eventTime now <= doorsOpen)
         create this with redeemed = True
 
     -- | Owner lists the ticket for resale to a named buyer. Consuming, so the

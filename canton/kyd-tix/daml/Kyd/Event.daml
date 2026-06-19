@@ -63,6 +63,7 @@ mintFromAllocation a fan = do
     artist = a.artist
     owner = fan
     eventId = a.eventId
+    eventTime = a.eventTime
     tierId = a.tierId
     serial = a.serialBase + a.sold
     facePrice = a.price
@@ -119,6 +120,7 @@ template Event
               venue
               artist
               eventId
+              eventTime
               tierId
               price = tierPriceAt tier
               resaleCapBps = tier.resaleCapBps
@@ -161,6 +163,7 @@ template TierAllocation
     venue : Party
     artist : Party
     eventId : Text
+    eventTime : Time          -- denormalized from the Event, to time-bound check-in
     tierId : Text
     price : Decimal
     resaleCapBps : Int

@@ -7,7 +7,7 @@ module Kyd.Demo where
 
 import Daml.Script
 import DA.Date (date, Month(..))
-import DA.Time (time)
+import DA.Time (addRelTime, hours, time)
 
 import Kyd.Cash
 import Kyd.Event
@@ -28,6 +28,7 @@ data DemoParties = DemoParties
 
 setup : Script DemoParties
 setup = do
+  now <- getTime
   operator <- allocatePartyWithHint "KYD-Operator" (PartyIdHint "KYD-Operator")
   venue    <- allocatePartyWithHint "Brooklyn-Bowl" (PartyIdHint "Brooklyn-Bowl")
   artist   <- allocatePartyWithHint "Robert-Plant" (PartyIdHint "Robert-Plant")
@@ -51,7 +52,7 @@ setup = do
     operator, venue, artist
     eventId = "SHOW-001"
     name = "Robert Plant — Live at Brooklyn Bowl"
-    eventTime = time (date 2026 Jul 4) 20 0 0
+    eventTime = addRelTime now (hours 3)   -- "tonight" so the door scanner demo works
     royaltyBps = 1000
     financingShareBps = 5000
     tiers =
