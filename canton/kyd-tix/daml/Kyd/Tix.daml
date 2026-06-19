@@ -197,14 +197,14 @@ template FinancingOffering
           tranches = loanTranches
         pure (loan, proceeds)
 
--- | An open, non-invited capital raise: instead of naming lenders up front, the
---   offering is broadcast to a well-known `public` party that every onboarded
---   lender reads, forming a public order book. Eligibility is enforced at commit
---   time — only parties holding a 'Lender' membership ('Kyd.Roles') can fund —
---   so the KYC gate moves from an allow-list to on-ledger credentials. Once
---   fully subscribed it converts to the same 'SyndicatedLoan' as the invited
---   path.
-template OpenFinancingOffering
+-- | An open, non-invited capital raise. Discovery is split from the commitment
+--   ledger (audit KYD-09): the `public` party observes ONLY this listing —
+--   terms plus the aggregate `raised` so far — never who committed or how much.
+--   Each lender's commitment is recorded as a separate, private 'OpenCommitment'
+--   visible only to the operator, venue and that lender. Eligibility is the KYC
+--   gate ('Lender' membership). Once fully subscribed it converts to the same
+--   'SyndicatedLoan' as the invited path.
+template OpenOfferingListing
   with
     operator : Party
     venue : Party
@@ -215,7 +215,7 @@ template OpenFinancingOffering
     revenueShareBps : Int
     dueDate : Time
     lateInterestBpsPerDay : Int
-    commitments : [LenderCommitment]
+    raised : Decimal              -- aggregate committed so far (NO lender identities)
   where
     signatory operator, venue
     observer public
@@ -223,58 +223,48 @@ template OpenFinancingOffering
         && factorRateBps >= 10000
         && revenueShareBps > 0 && revenueShareBps <= 10000
         && lateInterestBpsPerDay >= 0
-        && sum (map (\c -> c.amount) commitments) <= target
+        && raised >= 0.0 && raised <= target
 
-    -- | Any onboarded lender discovers the book (via `public`) and commits.
-    --   Flexible controller: the lender authorizes with its own cash; the
-    --   'Lender' membership lookup is the KYC gate.
-    choice OpenOffering_Commit : ContractId OpenFinancingOffering
+    -- | Any onboarded lender discovers the book (via `public`) and commits. The
+    --   commitment is recorded PRIVATELY (a separate OpenCommitment); the public
+    --   listing only learns the new aggregate.
+    choice Listing_Commit : (ContractId OpenOfferingListing, ContractId OpenCommitment)
       with
         lender : Party
         cashCid : ContractId Cash
       controller lender
       do
         _ <- fetchByKey @Membership (operator, lender, Lender)
-        assertMsg "lender has already committed"
-          (not (any (\c -> c.lender == lender) commitments))
         cash <- fetch cashCid
         assertMsg "commit from the lender's own cash" (cash.owner == lender)
-        let committed = sum (map (\c -> c.amount) commitments)
         assertMsg "commitment would exceed the remaining allocation"
-          (committed + cash.amount <= target)
+          (raised + cash.amount <= target)
         locked <- lockCommitment operator venue lender eventId dueDate cashCid
-        let c = LenderCommitment with lender, amount = cash.amount, locked
-        create this with commitments = c :: commitments
+        com <- create OpenCommitment with operator, venue, lender, eventId, amount = cash.amount, locked
+        listing <- create this with raised = raised + cash.amount
+        pure (listing, com)
 
-    -- | A lender withdraws before activation; its commitment is unlocked in place.
-    choice OpenOffering_Uncommit : ContractId OpenFinancingOffering
-      with lender : Party
-      controller lender
-      do
-        let mine   = filter (\c -> c.lender == lender) commitments
-            others = filter (\c -> c.lender /= lender) commitments
-        case mine of
-          [c] -> do
-            _ <- unlockCommitment c
-            create this with commitments = others
-          _ -> abort "no commitment to withdraw"
+    -- | Venue closes the book early (commitments are returned by their lenders
+    --   via OpenCommitment_Uncommit, or swept by the operator).
+    choice Listing_Cancel : ()
+      controller venue
+      do pure ()
 
-    -- | Venue cancels the raise; every commitment is unlocked back to its lender.
-    choice OpenOffering_Cancel : ()
+    -- | Fully subscribed: the venue settles the gathered private commitments to
+    --   itself as principal and books the loan. The commitment cids come from
+    --   the off-ledger automation (the venue is a stakeholder of each).
+    choice Listing_Activate : (ContractId SyndicatedLoan, [ContractId Cash])
+      with commitmentCids : [ContractId OpenCommitment]
       controller venue
       do
-        _ <- forA commitments unlockCommitment
-        pure ()
-
-    -- | Fully subscribed: principal to the venue, syndicated loan booked.
-    choice OpenOffering_Activate : (ContractId SyndicatedLoan, [ContractId Cash])
-      controller venue
-      do
-        let committed = sum (map (\c -> c.amount) commitments)
+        coms <- forA commitmentCids fetch
+        assertMsg "a commitment belongs to a different offering"
+          (all (\co -> co.operator == operator && co.venue == venue && co.eventId == eventId) coms)
+        let committed = sum (map (\co -> co.amount) coms)
         assertMsg "offering is not fully subscribed" (committed == target)
-        proceeds <- forA commitments (settleCommitmentToVenue venue)
+        proceeds <- forA commitmentCids (`exercise` OpenCommitment_SettleToVenue)
         let factor = intToDecimal factorRateBps / 10000.0
-            loanTranches = map (\c -> Tranche c.lender (c.amount * factor)) commitments
+            loanTranches = map (\co -> Tranche co.lender (co.amount * factor)) coms
         loan <- create SyndicatedLoan with
           operator
           venue
@@ -285,6 +275,31 @@ template OpenFinancingOffering
           lastAccrual = dueDate
           tranches = loanTranches
         pure (loan, proceeds)
+
+-- | A lender's PRIVATE commitment to an open raise — visible only to operator,
+--   venue and the lender, never the public order book (audit KYD-09). Funds are
+--   locked in place (the lender keeps custody) until the raise activates.
+template OpenCommitment
+  with
+    operator : Party
+    venue : Party
+    lender : Party
+    eventId : Text
+    amount : Decimal
+    locked : ContractId Cash
+  where
+    signatory operator, lender
+    observer venue
+
+    -- | The lender withdraws before activation; its funds are unlocked in place.
+    choice OpenCommitment_Uncommit : ContractId Cash
+      controller lender
+      do exercise locked Cash_Unlock
+
+    -- | On activation, the committed funds settle to the venue as principal.
+    choice OpenCommitment_SettleToVenue : ContractId Cash
+      controller venue
+      do exercise locked (Cash_SettleLocked with newOwner = venue)
 
 -- | The syndicate's claim on the venue. Repayment is enforced two ways:
 --   ticket revenue settles through 'Loan_SettleRevenue' (the contract takes the
