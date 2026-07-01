@@ -45,7 +45,7 @@ appOnCanton = do
   -- Alice (a p1 fan) buys via the standard paid-sale path: signed order, the
   -- operator's engine fills it atomically.
   aliceCash <- submit operator $ createCmd Cash with
-    operator, owner = alice, amount = 50.0, lock = None, observers = []
+    operator, owner = alice, amount = 50.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
   order <- submit alice $ createCmd PurchaseOrder with
     operator, venue = venueA, fan = alice, eventId = "SHOW-A", tierId = "GA", cashCid = aliceCash
   (_, aliceTicket) <- submit operator $ exerciseCmd order (PurchaseOrder_Fill with allocationCid = alloc)

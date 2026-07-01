@@ -9,13 +9,15 @@ import DA.Assert ((===))
 import DA.Date (date, Month(..))
 import DA.Time (time)
 
+import Splice.Api.Token.HoldingV1 (Lock(..))
+
 import Kyd.Cash
 import Kyd.Roles
 import Kyd.Event
 import Kyd.Settlement
 import Kyd.Ticket
 import Kyd.Tix
-import Kyd.Test (setupCast, mint, cashOf, makeEvent, openGA, setupLoan, buy)
+import Kyd.Test (setupCast, mint, cashOf, makeEvent, openGA, setupLoan, buy, makeOffering)
 
 -- 1. Cash integrity: only the operator can issue; only the owner can move,
 --    split or merge; overdrafts are unrepresentable.
@@ -24,7 +26,8 @@ testCashSecurity = do
   c <- setupCast
   -- Forgery: Alice cannot issue herself operator cash (operator is signatory).
   submitMustFail c.alice $ createCmd Cash with
-    operator = c.operator, owner = c.alice, amount = 1000000.0, lock = None, observers = []
+    operator = c.operator, owner = c.alice, amount = 1000000.0
+    lock = None, lockRecipient = None, lockCoSigner = None, observers = []
   n <- mint c c.alice 100.0
   -- Theft: neither the operator nor a stranger can move the owner's note.
   submitMustFail c.operator $ exerciseCmd n (Cash_Transfer with newOwner = c.operator)
@@ -260,4 +263,68 @@ testEarlyCheckInBlocked = do
   -- Within the doors window (showtime): the same scan succeeds.
   setTime (time (date 2026 Jul 4) 20 0 0)
   _ <- submit c.venue $ exerciseCmd t1 Ticket_CheckIn
+  pure ()
+
+-- 12. Locked-fund custody (audit KYD-11): the operator's sole-signatory
+--     authority over 'Cash' must never let it single-handedly redirect ANY
+--     holding — locked or not — to itself. Four independent guards, proven
+--     directly on the primitive (not just through the wrapper choices that
+--     happen to call it, since the operator could otherwise bypass any
+--     wrapper and call 'Cash_SettleLocked' straight on the contract id):
+--       1. A never-locked note cannot be "settled" — there is nothing for
+--          this choice to legitimately do to it.
+--       2. A lock cannot be created without the true owner's live consent —
+--          the operator cannot freeze an arbitrary party's funds.
+--       3. A locked holding can only be released to the recipient fixed when
+--          it was locked — a lender's commitment can never be redirected to
+--          the operator instead of the venue it was committed to.
+--       4. Where the operator IS the declared recipient (the revenue-share
+--          fan-out hop — the operator briefly holds a sale's carved share
+--          only to distribute it pro-rata to lenders), the venue's
+--          co-signature is required, live if this is called standalone — the
+--          operator cannot take custody and simply keep the money.
+testLockedFundsCustody : Script ()
+testLockedFundsCustody = do
+  c <- setupCast
+  _ <- setupLoan c   -- a live TIX facility against SHOW-001
+  [(ev, _)] <- query @Event c.venue
+  (_ev1, alloc) <- openGA c ev 1
+
+  -- (1) A plain, never-locked note cannot be "settled".
+  plain <- mint c c.alice 10.0
+  submitMustFail c.operator $ exerciseCmd plain (Cash_SettleLocked with newOwner = c.operator)
+
+  -- (2) The operator cannot freeze Alice's cash without her consent.
+  let bogusLock = Lock with holders = [c.operator], expiresAt = None, expiresAfter = None, context = None
+  submitMustFail c.operator $ exerciseCmd plain
+    (Cash_Lock with newLock = bogusLock, newLockRecipient = c.operator, newLockCoSigner = None)
+
+  -- A paid sale carves the lenders' revenue share into a locked receipt:
+  -- declared recipient = operator (the fan-out hop), co-signer = venue.
+  _ <- buy c c.alice "SHOW-001" "GA" alloc 50.0
+  [(receiptCid, receipt)] <- query @RevenueShare c.operator
+
+  -- (4) Operator alone cannot release the receipt (needs venue)...
+  submitMustFail c.operator $ exerciseCmd receiptCid Receipt_Release
+  -- ...nor bypass the receipt entirely and settle the underlying locked cash
+  -- straight to itself.
+  submitMustFail c.operator $ exerciseCmd receipt.locked (Cash_SettleLocked with newOwner = c.operator)
+  -- The legitimate route (operator + venue, as 'Loan_SweepRevenue' supplies
+  -- internally) still works.
+  _ <- submitMulti [c.operator, c.venue] [] $ exerciseCmd receiptCid Receipt_Release
+
+  -- A lender's committed funds are locked with the venue as the ONLY
+  -- declared recipient.
+  off <- makeOffering c
+  n100 <- mint c c.lender 100.0
+  off2 <- submit c.lender $ exerciseCmd off (Offering_Commit with lender = c.lender, cashCid = n100)
+  Some offering <- queryContractId c.operator off2
+  let [commitment] = offering.commitments
+
+  -- (3) The operator cannot redirect the commitment to itself...
+  submitMustFail c.operator $ exerciseCmd commitment.locked (Cash_SettleLocked with newOwner = c.operator)
+  -- ...only ever to the venue it was actually committed to, and that route
+  -- needs no further live consent (the async-settlement property locks are
+  -- designed for).
+  _ <- submit c.operator $ exerciseCmd commitment.locked (Cash_SettleLocked with newOwner = c.venue)
   pure ()

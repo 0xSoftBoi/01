@@ -11,7 +11,7 @@
 --   (custody stays with the owner) while a transfer or allocation is in flight.
 module Kyd.Cash where
 
-import DA.Optional (isNone)
+import DA.Optional (isNone, isSome)
 
 import Splice.Api.Token.HoldingV1
 import Splice.Api.Token.MetadataV1 (emptyMetadata)
@@ -27,6 +27,21 @@ template Cash
     owner : Party
     amount : Decimal
     lock : Optional Lock   -- set while reserved by the registry (allocation/transfer in flight)
+    lockRecipient : Optional Party
+      -- ^ The ONLY party 'Cash_SettleLocked' may hand this note to, fixed when
+      --   the lock was created (audit KYD-11). Without this, the operator's
+      --   sole-signatory authority over 'Cash_SettleLocked' would let it
+      --   redirect ANY locked holding to an arbitrary destination (itself
+      --   included), defeating lock-in-place custody entirely.
+    lockCoSigner : Optional Party
+      -- ^ An extra party whose authority 'Cash_SettleLocked' requires, fixed
+      --   when the lock was created. Used only when 'lockRecipient' is the
+      --   operator itself (the revenue-share fan-out hop), where the
+      --   recipient check alone cannot tell a legitimate custody hop from
+      --   operator self-dealing — the co-signer (the venue whose funds these
+      --   are) must be genuinely present in the transaction, either live
+      --   (a standalone call) or via the signatories of the batch choice that
+      --   performs the real distribution (the sweep).
     observers : [Party]    -- disclosure list, e.g. settlement counterparties
   where
     signatory operator
@@ -85,18 +100,32 @@ template Cash
         create this with amount = amount + other.amount
 
     -- | Registry reserves this holding in place (owner keeps it; it cannot be
-    --   moved until unlocked). Authorized by the operator as instrument admin.
+    --   moved until unlocked). Authorized by the operator AND the current
+    --   owner (audit KYD-11): without the owner's own authority, the operator
+    --   could freeze an arbitrary party's funds with no relationship to the
+    --   workflow that's supposedly locking them. Every legitimate call site
+    --   already carries the owner's authority (the owner is either the
+    --   explicit controller of the enclosing choice, or a signatory of the
+    --   contract that choice is exercised on), so this costs the real
+    --   workflows nothing. `newLockRecipient` is the ONLY destination
+    --   'Cash_SettleLocked' will honor for this lock; `newLockCoSigner`, when
+    --   set, is an extra party 'Cash_SettleLocked' requires (see there).
     choice Cash_Lock : ContractId Cash
-      with newLock : Lock
-      controller operator
+      with newLock : Lock, newLockRecipient : Party, newLockCoSigner : Optional Party
+      controller operator, owner
       do
         assertMsg "holding is already locked" (isNone lock)
-        create this with lock = Some newLock
+        create this with
+          lock = Some newLock
+          lockRecipient = Some newLockRecipient
+          lockCoSigner = newLockCoSigner
 
     -- | Registry releases the reservation, leaving the holding with its owner.
+    --   Safe to leave operator-only: ownership never changes, so there is
+    --   nothing here for the operator to redirect.
     choice Cash_Unlock : ContractId Cash
       controller operator
-      do create this with lock = None
+      do create this with lock = None, lockRecipient = None, lockCoSigner = None
 
     -- | The OWNER reclaims a holding whose lock has passed its expiry, so a
     --   reservation can never freeze funds indefinitely (CIP-56: registries
@@ -112,14 +141,33 @@ template Cash
             None -> abort "lock has no expiry to reclaim against"
             Some deadline -> do
               assertMsg "lock has not yet expired" (now >= deadline)
-              create this with lock = None
+              create this with lock = None, lockRecipient = None, lockCoSigner = None
 
     -- | Registry settles a locked holding to a new owner in one step (used when
-    --   an allocation executes). Authorized by the operator as instrument admin.
+    --   an allocation executes). Authorized by the operator as instrument
+    --   admin, PLUS the lock's declared co-signer if one was set (audit
+    --   KYD-11). Two independent guards close the "operator alone redirects a
+    --   locked holding" theft class: (1) the destination must match the
+    --   recipient fixed at lock time, so the operator can never send a
+    --   commitment or allocation anywhere but its true beneficiary; (2) for
+    --   the one workflow where the operator IS the legitimate recipient
+    --   (revenue-share receipts, which the operator briefly holds only to
+    --   fan out pro-rata to lenders), the lock's co-signer must ALSO be
+    --   authorized — live, if this is called standalone, or via the
+    --   signatories of the batch sweep that performs the real distribution.
+    --   Without the co-signer check, an operator holding just its own key
+    --   could call this directly on any revenue-share's locked cash and keep
+    --   the proceeds, never running the waterfall — reachable even bypassing
+    --   'Kyd.Settlement.Receipt_Release' entirely, since this choice lives on
+    --   Cash (issuer-signed only) and is otherwise independently exercisable.
     choice Cash_SettleLocked : ContractId Cash
       with newOwner : Party
-      controller operator
-      do create this with owner = newOwner, lock = None, observers = []
+      controller operator :: (case lockCoSigner of None -> []; Some p -> [p])
+      do
+        assertMsg "holding is not locked" (isSome lock)
+        assertMsg "settlement destination does not match the lock's declared recipient"
+          (lockRecipient == Some newOwner)
+        create this with owner = newOwner, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
 
 -- | Merge a list of (unlocked) notes into the first. Used by batch settlement
 --   to consolidate many small notes into one before a waterfall run.

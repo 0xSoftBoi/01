@@ -32,7 +32,7 @@ privacyProof = do
 
   -- A holding whose only stakeholders (operator, alice) are on p1.
   aliceCash <- submit operator $ createCmd Cash with
-    operator, owner = alice, amount = 100.0, lock = None, observers = []
+    operator, owner = alice, amount = 100.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
 
   -- Alice's node (p1) has it.
   Some _ <- queryContractId alice aliceCash
@@ -54,7 +54,7 @@ privacyProof = do
   -- COMMITTING proves p1 and p2 are distinct nodes connected via the shared
   -- domain (p2 had to confirm/receive as the observer's participant).
   bobCash <- submit operator $ createCmd Cash with
-    operator, owner = bob, amount = 50.0, lock = None, observers = []
+    operator, owner = bob, amount = 50.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
   Some bc <- queryContractId operator bobCash   -- operator-local read (p1), race-free
   assertMsg "cross-participant create landed with Bob as owner" (bc.owner == bob)
 

@@ -31,8 +31,19 @@ template RevenueShare
     --   operator so the waterfall (run under operator authority in
     --   'Loan_SweepRevenue') can distribute it pro-rata to the lenders. Atomic
     --   within the sweep transaction.
+    --   Joint controller (audit KYD-11): standing alone, `controller operator`
+    --   would let the operator exercise this choice as its own top-level
+    --   transaction — outside 'Loan_SweepRevenue', with no obligation to ever
+    --   continue on to the lender payout — and simply keep the released cash.
+    --   Requiring `venue` closes that: as a stand-alone submission this choice
+    --   needs venue's live authorization, which venue has no reason to give
+    --   away its own revenue for nothing. Called from inside
+    --   'Loan_SweepRevenue' (a choice on 'Kyd.Tix.SyndicatedLoan', signed by
+    --   operator AND venue), venue's authority is already present, so the
+    --   legitimate batch-sweep path is unaffected and still runs under
+    --   operator authority alone.
     choice Receipt_Release : ContractId Cash
-      controller operator
+      controller operator, venue
       do exercise locked (Cash_SettleLocked with newOwner = operator)
 
     -- | Return the share to the venue when no facility is owed (e.g. the loan

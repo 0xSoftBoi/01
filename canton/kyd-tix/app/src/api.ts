@@ -142,6 +142,8 @@ export async function topUp(parties: DemoParties, fan: string, amount: number): 
     owner: fan,
     amount: amount.toFixed(10),
     lock: null,
+    lockRecipient: null,
+    lockCoSigner: null,
     observers: [],
   });
 }

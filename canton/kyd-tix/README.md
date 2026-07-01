@@ -9,8 +9,8 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **34 scenarios** pass on Daml SDK
-**2.10.4** — functional (incl. gifting and venue refunds), an 11-suite
+It builds (LF 1.17, SCU-ready) and all **35 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), a 12-suite
 adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
 and 4 suites driving DvP settlement, free-of-payment transfer and lock-in-place
 custody through the **real CIP-56 token-standard
@@ -30,7 +30,7 @@ automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-make test     # both Daml packages + all 34 scenarios
+make test     # both Daml packages + all 35 scenarios
 make app      # typed bindings + web app production build
 make demo     # sandbox + demo seed + JSON API + triggers
 cd app && npm run dev           # the product UI (PWA-installable)
@@ -184,7 +184,10 @@ automatically enforces repayment"* literal on Canton: at the moment of sale the
 lenders' share is locked in place on the venue's own holding (the venue keeps
 custody but cannot spend it) — and the sweep settles whole batches through the
 loan. Commitments and revenue shares both use this lock-in-place model, so
-funds never sit in operator custody (audit KYD-02). The tranche market
+funds never sit in operator custody outside the one atomic hop the batch
+sweep needs to fan a receipt out pro rata — and even that hop requires the
+venue's co-signature, live if attempted standalone (audit KYD-02, KYD-11).
+The tranche market
 clears through the operator (joint controller), mirroring the agent-bank role
 in real syndications, and buyers must hold a `Lender` membership — an on-ledger
 KYC gate for the RWA story.
@@ -328,7 +331,8 @@ in place (still owned, unspendable) until it settles or is withdrawn.
 
 **Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
 fail): forged cash issuance and theft, overdrafts, authority abuse on
-issuance/repricing/fills, unilateral escrow refunds, register tampering by the
+issuance/repricing/fills, unilateral escrow refunds, an operator freezing or
+redirecting locked funds to itself (audit KYD-11), register tampering by the
 operator (audit KYD-01), cross-facility receipt injection, resale
 double-listing and impersonation, membership forgery. Findings and trust model
 in [AUDIT.md](AUDIT.md).

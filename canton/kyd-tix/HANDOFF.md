@@ -8,7 +8,7 @@ for KYD).
 ## One-command map
 
 ```
-make test     # Daml: 2 packages, 34 scenarios (functional/adversarial/CIP-56)
+make test     # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
 make app      # web app: codegen + type-check + production build
 make demo     # local stack: sandbox + seed + JSON API + 3 triggers
               # then: cd app && npm run dev  (web)  /  ios/KYDFan (Xcode)
@@ -21,7 +21,7 @@ every push touching this tree.
 
 | Layer | Verification |
 | --- | --- |
-| Daml model (`daml/`) | 34 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
+| Daml model (`daml/`) | 35 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
 | Contention (`integration/client/src/bench.ts`) | **Measured** on a local sandbox: sharding gives 8.7× (16 concurrent) and 13.7× (24 concurrent) throughput, contention retries 100s → 0, scaling with concurrency. `npm run bench -- N`. Not in CI (needs a running ledger). |
 | Multi-participant on real Canton (`privacy-proof/`) | **Proven on a real 2-participant + 1-domain Canton network** (`./run.sh`): the `Cash` privacy primitive AND the full app (sharded issuance, paid sale, cross-participant gift) — a competing venue's node holds none of another venue's events/tickets. Race-free, deterministic. Not in CI (needs a running Canton); run on demand. |
 | Web app (`app/`) | Type-check + production build in CI. The full runtime loop (JWT → catalog → split → order → trigger fill → pass; financing receipt escrowed) was driven over HTTP against the running stack during development. |
@@ -68,5 +68,5 @@ app/                  web product (React/TS, PWA-installable)
 ios/KYDFan/           native fan app (SwiftUI, XcodeGen)
 integration/          JSON API config, local stack script, headless client
 validator/            network strategy (README) + operational runbook
-AUDIT.md              trust model, findings KYD-01..10, attack coverage
+AUDIT.md              trust model, findings KYD-01..11, attack coverage
 ```

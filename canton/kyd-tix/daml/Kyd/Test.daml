@@ -49,7 +49,8 @@ onboard c member role = do
 -- Mint operator cash to a party.
 mint : Cast -> Party -> Decimal -> Script (ContractId Cash)
 mint c owner amount = submit c.operator $ createCmd Cash with
-  operator = c.operator, owner, amount, lock = None, observers = []
+  operator = c.operator, owner, amount
+  lock = None, lockRecipient = None, lockCoSigner = None, observers = []
 
 -- Sum a party's spendable cash: notes it owns that are NOT locked (locked
 -- holdings are reserved in place by the registry for an in-flight allocation)
