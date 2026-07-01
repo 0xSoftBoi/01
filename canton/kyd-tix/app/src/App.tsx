@@ -13,8 +13,16 @@ import {
 } from "./api";
 import { ToastProvider } from "./Toast";
 import { track } from "./analytics";
+import {
+  ConnectedWallet,
+  abbreviateParty,
+  clearPersistedWallet,
+  loadPersistedWallet,
+  persistWallet,
+} from "./wallet";
 import Logo from "./Logo";
 import NotificationsBell from "./components/NotificationsBell";
+import WalletConnect from "./components/WalletConnect";
 import EventsView from "./components/EventsView";
 import TicketsView from "./components/TicketsView";
 import DoorView from "./components/DoorView";
@@ -130,13 +138,27 @@ export default function App() {
   const [role, setRole] = useState<RoleKey>("alice");
   const [tab, setTab] = useState<Tab>("discover");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [wallet, setWallet] = useState<ConnectedWallet | null>(null);
+  const [walletConnectOpen, setWalletConnectOpen] = useState(false);
 
   useEffect(() => {
     track("app_open");
+    setWallet(loadPersistedWallet());
     loadDemoParties()
       .then(setParties)
       .catch(() => setBootError(true));
   }, []);
+
+  const connectWalletState = (w: ConnectedWallet) => {
+    persistWallet(w);
+    setWallet(w);
+  };
+  const disconnectWallet = () => {
+    clearPersistedWallet();
+    setWallet(null);
+    setWalletConnectOpen(false);
+    track("wallet_disconnected");
+  };
 
   const roleInfo = ROLES.find((r) => r.key === role)!;
   // Real per-role login (server/src/identity.ts issues a signed token for
@@ -182,6 +204,26 @@ export default function App() {
             {roleInfo.kind === "fan" ? null : (
               <span className="muted small">{roleInfo.label}</span>
             )}
+            <button
+              className={`wc-chip ${wallet ? "live" : "connect"}`}
+              onClick={() => {
+                setWalletConnectOpen(true);
+                track("wallet_connect_opened", { connected: !!wallet });
+              }}
+              title={wallet ? "Your connected Canton wallet" : "Connect a Canton wallet"}
+            >
+              {wallet ? (
+                <>
+                  <span className="wc-dot" />
+                  <span className="wc-chip-party">{abbreviateParty(wallet.party).split("::")[0]}</span>
+                </>
+              ) : (
+                <>
+                  <span className="wc-plug">⚭</span>
+                  <span className="wc-chip-label">Connect wallet</span>
+                </>
+              )}
+            </button>
             <NotificationsBell key={party} session={session} />
             <div className="avatar-wrap">
               <button className="avatar" onClick={() => setMenuOpen((o) => !o)}>
@@ -221,6 +263,15 @@ export default function App() {
             {tab === "dashboard" && <VenueView venueLedger={ledger} venue={party} />}
             {tab === "royalties" && <ArtistView artistLedger={ledger} artist={party} />}
           </main>
+        )}
+
+        {walletConnectOpen && (
+          <WalletConnect
+            wallet={wallet}
+            onConnected={connectWalletState}
+            onDisconnect={disconnectWallet}
+            onClose={() => setWalletConnectOpen(false)}
+          />
         )}
       </div>
     </ToastProvider>
