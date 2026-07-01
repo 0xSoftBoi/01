@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { asyncRoute } from "./asyncRoute.js";
 import { verifyToken } from "./verify.js";
-import { processPspWebhook, signPspEvent } from "./psp.js";
+import { processPspWebhook, signPspEvent, type DeliveryStore } from "./psp.js";
 import type { MintableLedger } from "./ledgerSession.js";
 
 // Customer-facing on-ramp: requires the FAN's own session token (not the
@@ -11,7 +12,7 @@ import type { MintableLedger } from "./ledgerSession.js";
 // synthesizes the exact signed webhook event the PSP would send once a real
 // charge clears, and runs it through processPspWebhook — the identical
 // signature-checked function webhook.ts uses for a genuine external POST.
-export function paymentsRouter(session: MintableLedger, operatorParty: string) {
+export function paymentsRouter(session: MintableLedger, operatorParty: string, deliveries?: DeliveryStore) {
   const router = Router();
 
   router.post(
@@ -34,8 +35,16 @@ export function paymentsRouter(session: MintableLedger, operatorParty: string) {
         return;
       }
 
-      const body = JSON.stringify({ type: "charge.succeeded", data: { fanParty, amount } });
-      const result = await processPspWebhook(Buffer.from(body), signPspEvent(body), session, operatorParty);
+      // A fresh event id per request: top-ups are intentionally repeatable
+      // (two identical $40 top-ups are two real charges), so each synthesized
+      // event must be a distinct "delivery" to processPspWebhook's dedup —
+      // unlike a real PSP retry, which re-sends the same event id and bytes.
+      const body = JSON.stringify({
+        id: `topup-${randomUUID()}`,
+        type: "charge.succeeded",
+        data: { fanParty, amount },
+      });
+      const result = await processPspWebhook(Buffer.from(body), signPspEvent(body), session, operatorParty, deliveries);
       res.status(result.status).json(result.body);
     }),
   );

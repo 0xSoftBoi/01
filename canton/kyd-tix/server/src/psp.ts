@@ -42,9 +42,29 @@ export interface PspResult {
   body: Record<string, unknown>;
 }
 
+// The narrow persistence surface the idempotency check needs (db.ts's KydDb
+// satisfies it) — an interface so callers/tests without a db can still run
+// the signature/mint path, same pattern as MintableLedger.
+export interface DeliveryStore {
+  seenWebhookDelivery(deliveryId: string): boolean;
+  recordWebhookDelivery(deliveryId: string): void;
+}
+
 interface ChargeSucceededEvent {
+  id?: string;
   type?: string;
   data?: { fanParty?: string; amount?: number };
+}
+
+// Real PSPs retry a webhook until they see a 2xx, so the same charge WILL
+// arrive more than once; without dedup, every network blip near our response
+// mints a second Cash for the same payment. The PSP's own event id is the
+// dedup key when present; otherwise the HMAC over the exact bytes stands in
+// (same signed bytes = same delivery — a legitimately distinct charge always
+// differs somewhere in the body).
+function deliveryIdFor(event: ChargeSucceededEvent, rawBody: Buffer): string {
+  if (typeof event.id === "string" && event.id.length > 0) return event.id;
+  return "sha256:" + createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
 }
 
 // The one code path that ever mints app-balance Cash. Both the real webhook
@@ -57,6 +77,7 @@ export async function processPspWebhook(
   signatureHeader: string | undefined,
   session: MintableLedger,
   operatorParty: string,
+  deliveries?: DeliveryStore,
 ): Promise<PspResult> {
   if (!verifyPspSignature(rawBody, signatureHeader)) {
     return { status: 401, body: { error: "invalid webhook signature" } };
@@ -69,6 +90,14 @@ export async function processPspWebhook(
   }
   if (event.type !== "charge.succeeded") {
     return { status: 202, body: { ignored: true } };
+  }
+  // Checked before the mint, recorded only AFTER it succeeds: a mint that
+  // failed mid-flight stays retryable, while a mint that succeeded can never
+  // run twice. 200 (not an error) on replay — the PSP just needs to know it
+  // can stop retrying.
+  const deliveryId = deliveryIdFor(event, rawBody);
+  if (deliveries?.seenWebhookDelivery(deliveryId)) {
+    return { status: 200, body: { status: "duplicate" } };
   }
   const { fanParty, amount } = event.data ?? {};
   if (typeof fanParty !== "string" || typeof amount !== "number" || !Number.isFinite(amount) || !(amount > 0)) {
@@ -83,5 +112,6 @@ export async function processPspWebhook(
     lockCoSigner: null,
     observers: [],
   });
+  deliveries?.recordWebhookDelivery(deliveryId);
   return { status: 200, body: { minted: true } };
 }

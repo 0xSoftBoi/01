@@ -2,12 +2,13 @@
 // passes that materialize into the real QR when the operator's fill commits —
 // the buy never feels like it disappeared into a queue. Resale keeps the
 // anti-scalping cap as the slider's ceiling and the ledger's law.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type Ledger from "@daml/ledger";
 import { Ticket, ResaleOffer, GiftOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
 import { Event, PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { QueryResult, coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
+import { track } from "../analytics";
 import { useToast } from "../Toast";
 import { LogoIcon } from "../Logo";
 
@@ -39,6 +40,14 @@ export default function TicketsView({ events, fanLedger, fan, otherFans }: Props
     events.contracts.find((e) => e.payload.eventId === eventId)?.payload.name ?? eventId;
 
   const mine = tickets.contracts.filter((t) => t.payload.owner === fan);
+
+  // Once per My Tickets visit, after the passes have actually loaded.
+  const viewTracked = useRef(false);
+  useEffect(() => {
+    if (tickets.loading || viewTracked.current) return;
+    viewTracked.current = true;
+    track("pass_viewed", { passes: mine.length });
+  }, [tickets.loading, mine.length]);
   const incoming = offers.contracts.filter((o) => o.payload.buyer === fan);
   const outgoing = offers.contracts.filter((o) => o.payload.ticket.owner === fan);
   const incomingGifts = gifts.contracts.filter((g) => g.payload.recipient === fan);
@@ -74,6 +83,7 @@ export default function TicketsView({ events, fanLedger, fan, otherFans }: Props
     try {
       const cashCid = await exactNote(fanLedger, fan, Number(salePrice));
       await fanLedger.exercise(ResaleOffer.ResaleOffer_Accept, offerCid as never, { cashCid });
+      track("offer_accepted", { salePrice: Number(salePrice) });
       toast("ok", "It's yours — ticket added to your passes");
     } catch (e) {
       toast(

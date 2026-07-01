@@ -6,6 +6,7 @@ import { useState } from "react";
 import type Ledger from "@daml/ledger";
 import { Event, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { DemoParties, QueryResult, coverHues, fmtMoney, placeOrder } from "../api";
+import { track } from "../analytics";
 import { useToast } from "../Toast";
 
 interface Props {
@@ -39,8 +40,10 @@ export default function EventsView({
       return;
     }
     setBusy(key);
+    track("buy_initiated", { eventId, tierId, price });
     try {
       await placeOrder(fanLedger, parties, fan, eventId, tierId, price);
+      track("buy_succeeded", { eventId, tierId, price });
       toast("ok", `You're in — issuing your ${tierId} ticket for ${name}`);
       onPurchased();
     } catch {
