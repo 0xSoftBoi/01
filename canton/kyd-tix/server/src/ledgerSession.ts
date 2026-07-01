@@ -5,6 +5,7 @@
 import { Ledger as DamlLedger } from "@daml/ledger";
 import type { Template, ContractId } from "@daml/types";
 import { issueLedgerToken } from "./tokens.js";
+import { ensureUserForParty, userIdFor } from "./userManagement.js";
 
 export interface LedgerContract<T = unknown> {
   contractId: string;
@@ -33,21 +34,38 @@ export interface MintableLedger {
 // what makes the catalog (catalog.ts) and PSP mint (psp.ts) routes a real
 // custody boundary rather than a relabeled client-side mint.
 export class LedgerSession implements QueryableLedger, MintableLedger {
+  private readonly userId: string;
   private cachedToken: Promise<string> | null = null;
   private tokenIssuedAtSeconds = 0;
   private readonly ttlSeconds = 10 * 60;
+  private provisioned: Promise<void> | null = null;
 
   constructor(
     private readonly party: string,
     private readonly jsonApiBaseUrl: string,
-  ) {}
+    userId = userIdFor("operator"),
+  ) {
+    this.userId = userId;
+  }
+
+  // Idempotent, but only worth doing once per process — see
+  // userManagement.ts for why a real Daml User (not just this token's own
+  // actAs claim) has to exist before a real signature-verifying participant
+  // will authorize anything under this session.
+  private ensureProvisioned(): Promise<void> {
+    if (!this.provisioned) {
+      this.provisioned = ensureUserForParty(this.jsonApiBaseUrl, this.userId, this.party);
+    }
+    return this.provisioned;
+  }
 
   private async token(): Promise<string> {
     const nowSeconds = Date.now() / 1000;
     const stillFresh = this.cachedToken && nowSeconds - this.tokenIssuedAtSeconds < this.ttlSeconds - 30;
     if (stillFresh) return this.cachedToken as Promise<string>;
+    await this.ensureProvisioned();
     this.tokenIssuedAtSeconds = nowSeconds;
-    this.cachedToken = issueLedgerToken(this.party, {
+    this.cachedToken = issueLedgerToken(this.userId, {
       actAs: [this.party],
       readAs: [this.party],
       expiresInSeconds: this.ttlSeconds,

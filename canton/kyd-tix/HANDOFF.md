@@ -9,7 +9,7 @@ for KYD).
 
 ```
 make test        # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
-make server-test # auth/catalog/payments server: 21 tests, no ledger required
+make server-test # auth/catalog/payments server: 26 tests, no ledger required
 make app         # web app: codegen + type-check + production build
 make demo        # local stack: sandbox + seed + JSON API + server + 3 triggers
                  # then: cd app && npm run dev  (web)  /  ios/KYDFan (Xcode)
@@ -30,30 +30,27 @@ every push touching this tree.
 | CIP-56 integration | `Cash` implements `Holding`; `Kyd.Registry` implements the standard `TransferFactory`/`AllocationFactory`/`Allocation`. Resale + transfers tested through these real factories. NOT yet run against live Canton Coin/USDCx package ids (swap the vendored DAR for the official releases). |
 | iOS app (`ios/KYDFan`) | Source-complete, no dependencies, same API contract as the verified web app — but **not compiled** (no macOS CI leg). Expect a first-build pass on a Mac. |
 | Validator ops (`validator/`) | Documentation + runbook with sourced commands. No node was stood up from this repo. |
-| Auth/catalog/payments server (`server/`) | **21 tests, no ledger required**: real RS256 token issuance and verification (including a genuine HTTP fetch of the JWKS endpoint), signing-key persistence across process restarts, the login route's operator exclusion, HMAC signature accept/reject on the PSP webhook, the catalog proxy. **Plus `server/auth-proof/`** — a real, single-participant Canton configured with a `jwt-rs-256-jwks` auth-service, proving Canton's own ledger-api (not just this server) verifies these signatures and rejects forged/tampered/absent/unprovisioned tokens. See `server/README.md` for the one thing that run corrected: full per-party login tokens need Daml User Management provisioning this server doesn't do yet. |
+| Auth/catalog/payments server (`server/`) | **26 tests, no ledger required**: real RS256 token issuance and verification (including a genuine HTTP fetch of the JWKS endpoint), signing-key persistence across process restarts, idempotent Daml User provisioning, the login route's operator exclusion, HMAC signature accept/reject on the PSP webhook, the catalog proxy. **Plus `server/auth-proof/`** — a real, single-participant Canton configured with a `jwt-rs-256-jwks` auth-service: proves Canton's own ledger-api verifies these signatures, rejects forged/tampered/absent/unprovisioned tokens, AND — the thing an earlier run of this proof found missing — that a genuine fan login through `/auth/login` now authorizes a real ledger-api command end to end, closed by `server/src/userManagement.ts`'s Daml User provisioning. |
 
 ## Production gaps, in priority order
 
-1. **Auth — substantially closed, one precisely-scoped piece left.**
-   `server/` replaces the old unsigned, browser-forged sandbox tokens
-   (`app/src/api.ts`'s old `sandboxToken`, and the analogous spot in
-   `ios .../LedgerClient.swift`, still unconverted) with real RS256-signed,
-   short-lived tokens issued server-side (`server/src/tokens.ts`),
-   verifiable against a published JWKS (`server/src/jwks.ts`). What's real:
-   the browser can no longer mint its own token for any party (including
-   the operator); the operator credential now lives only inside `server/`;
-   and `server/auth-proof/` proves — live, against a real Canton
-   participant configured with `jwt-rs-256-jwks` — that Canton itself
-   verifies these signatures and rejects forged/tampered/absent tokens.
-   What's left, found by running that proof rather than assumed: this SDK's
-   participant resolves every token's `sub` through Daml User Management
-   unconditionally, so the plain `actAs`/`readAs` claims this server issues
-   for fan/venue/artist logins would be rejected by a real
-   signature-verifying participant as-is. The fix is scoped precisely in
-   `server/README.md` — provision a Daml `User` per party on first login,
-   granting `CanActAs`/`CanReadAs`, via an admin-scoped session held only
-   server-side. Also still needed: a real IdP behind `/auth/login` in place
-   of the demo's role picker, and TLS everywhere.
+1. **Auth — closed.** `server/` replaces the old unsigned, browser-forged
+   sandbox tokens (`app/src/api.ts`'s old `sandboxToken`, and the analogous
+   spot in `ios .../LedgerClient.swift`, still unconverted) with real
+   RS256-signed, short-lived tokens issued server-side
+   (`server/src/tokens.ts`), verifiable against a published JWKS
+   (`server/src/jwks.ts`), naming a real, provisioned Daml `User`
+   (`server/src/userManagement.ts`) rather than just carrying a claim. The
+   browser can no longer mint its own token for any party (including the
+   operator); the operator credential lives only inside `server/`; and
+   `server/auth-proof/` proves — live, against a real Canton participant
+   configured with `jwt-rs-256-jwks` — that Canton itself verifies these
+   signatures, rejects forged/tampered/absent/unprovisioned tokens, AND
+   authorizes a genuine fan login's ordinary ledger-api command, end to end.
+   Still needed for production, not config: a real IdP behind `/auth/login`
+   in place of the demo's role picker, TLS everywhere, and wiring the same
+   `jwt-rs-256-jwks` config into `run-local.sh`'s actual demo stack (proven
+   in `auth-proof/`'s standalone Canton, not yet in the main one).
 2. **Real money**: swap `Kyd.Cash` for CIP-56 holdings (Canton Coin/USDCx).
    All settlement — resale, commitments, and revenue shares — already speaks
    the standard `Holding`/`Allocation`/factory interfaces with lock-in-place

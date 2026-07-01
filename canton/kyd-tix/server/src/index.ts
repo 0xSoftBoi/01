@@ -31,7 +31,7 @@ function main() {
   app.use(webhookRouter(operatorSession, parties.operator));
 
   app.use(express.json());
-  app.use(authRouter(parties));
+  app.use(authRouter(parties, JSON_API_URL));
   app.use(catalogRouter(operatorSession));
   app.use(paymentsRouter(operatorSession, parties.operator));
 

@@ -9,7 +9,15 @@ import { keySet } from "./keys.js";
 // participant config must agree on; see integration/README.md.
 export const ISSUER = "https://auth.kyd-tix.example/";
 export const AUDIENCE = "https://kyd-tix-ledger/";
-export const LEDGER_ID = "sandbox";
+// A real ledger-api command (not admin/party-management ones — those don't
+// check this) rejects with LEDGER_ID_MISMATCH if the token's ledgerId claim
+// doesn't match the participant's actual one, found live: `daml sandbox`
+// defaults to "sandbox" (why this worked untested for so long), but Canton
+// participants default their ledger id to the PARTICIPANT's own name (e.g.
+// auth-proof/canton.conf's "p1") — never actually "sandbox" outside the
+// bundled dev sandbox. A hardcoded default would silently break on any
+// real deployment.
+export const LEDGER_ID = process.env.LEDGER_ID ?? "sandbox";
 export const APPLICATION_ID = "kyd-tix-app";
 
 export interface TokenGrant {
