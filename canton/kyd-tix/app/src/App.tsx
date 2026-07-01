@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import type Ledger from "@daml/ledger";
 import {
   DemoParties,
   ROLES,
   RoleKey,
   fmtMoney,
-  ledgerFor,
   loadDemoParties,
   useBalance,
+  useCatalog,
+  useSession,
 } from "./api";
 import { ToastProvider } from "./Toast";
 import EventsView from "./components/EventsView";
@@ -69,17 +71,20 @@ function FanShell({
   parties,
   role,
   party,
+  fanToken,
+  ledger,
   tab,
   setTab,
 }: {
   parties: DemoParties;
   role: RoleKey;
   party: string;
+  fanToken: string;
+  ledger: Ledger;
   tab: Tab;
   setTab: (t: Tab) => void;
 }) {
-  const ledger = useMemo(() => ledgerFor(party), [party]);
-  const catalog = useMemo(() => ledgerFor(parties.operator), [parties]);
+  const catalog = useCatalog();
   const balance = useBalance(ledger, party);
   const [walletOpen, setWalletOpen] = useState(false);
 
@@ -94,17 +99,13 @@ function FanShell({
         {fmtMoney(balance)} <span className="plus">＋</span>
       </button>
       {walletOpen && (
-        <WalletSheet
-          parties={parties}
-          fan={party}
-          balance={balance}
-          onClose={() => setWalletOpen(false)}
-        />
+        <WalletSheet fanToken={fanToken} balance={balance} onClose={() => setWalletOpen(false)} />
       )}
       <main>
         {tab === "discover" && (
           <EventsView
-            catalog={catalog}
+            events={catalog.events}
+            allocs={catalog.allocs}
             fanLedger={ledger}
             fan={party}
             parties={parties}
@@ -114,7 +115,7 @@ function FanShell({
           />
         )}
         {tab === "tickets" && (
-          <TicketsView catalog={catalog} fanLedger={ledger} fan={party} otherFans={otherFans} />
+          <TicketsView events={catalog.events} fanLedger={ledger} fan={party} otherFans={otherFans} />
         )}
       </main>
     </>
@@ -135,11 +136,12 @@ export default function App() {
   }, []);
 
   const roleInfo = ROLES.find((r) => r.key === role)!;
-  const party = parties ? partyFor(parties, role) : "";
-  // Memoized: a fresh Ledger each render would re-subscribe every poll hook.
-  const ledger = useMemo(() => (party ? ledgerFor(party) : null), [party]);
+  // Real per-role login (server/src/identity.ts issues a signed token for
+  // exactly this role) rather than the browser forging its own.
+  const { session, ledger } = useSession(parties ? role : null);
 
-  if (!parties || !ledger) return <Boot error={bootError} />;
+  if (!parties || !ledger || !session) return <Boot error={bootError} />;
+  const party = session.party;
 
   const switchRole = (r: RoleKey) => {
     setRole(r);
@@ -192,7 +194,15 @@ export default function App() {
         </header>
 
         {roleInfo.kind === "fan" ? (
-          <FanShell parties={parties} role={role} party={party} tab={tab} setTab={setTab} />
+          <FanShell
+            parties={parties}
+            role={role}
+            party={party}
+            fanToken={session.token}
+            ledger={ledger}
+            tab={tab}
+            setTab={setTab}
+          />
         ) : (
           <main>
             {tab === "door" && <DoorView venueLedger={ledger} />}

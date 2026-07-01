@@ -6,7 +6,7 @@ surface over the Daml model — React + TypeScript, typed end-to-end with
 `daml codegen js` bindings, talking to the HTTP JSON API.
 
 ```
-integration/run-local.sh      # sandbox + demo seed + JSON API + triggers
+integration/run-local.sh      # sandbox + demo seed + JSON API + server + triggers
 cd app
 npm run codegen               # typed bindings from the built DAR
 npm install
@@ -36,15 +36,23 @@ Switch roles in the header — each role acts under its OWN party's authority:
 ## UX-architecture notes (the part that matters)
 
 - **No wallets anywhere.** Fan parties are hosted on the operator's validator;
-  "login" is an identity pick here and a phone/email JWT in production. Money
-  is a balance; the note-splitting plumbing (`exactNote`) lives in `api.ts`
-  and never reaches a component.
+  "login" is an identity pick here — `POST /auth/login` against `../server`
+  (`useSession` in `api.ts`) — that in production becomes a phone/email/OIDC
+  login in front of the same real, RS256-signed token issuance (see
+  `server/README.md`). Money is a balance; the note-splitting plumbing
+  (`exactNote`) lives in `api.ts` and never reaches a component.
 - **Catalog vs. authority.** Fans are not stakeholders of `Event` /
   `TierAllocation` (privacy by default), so the catalog is read through the
-  operator — exactly the backend-API role KYD's web2 app plays today — while
-  every *action* (buy, resell, accept) is signed by the fan's own party.
+  operator — exactly the backend-API role KYD's web2 app plays today. That
+  operator session lives in `../server` now, not the browser: the app calls
+  `GET /catalog` (`useCatalog` in `api.ts`) and gets plain JSON back, never a
+  token. Every *action* (buy, resell, accept) is still signed by the fan's
+  own party, using the token `/auth/login` issued for that role.
 - **The automation IS the UX.** Buying feels instant because the
   price-aware `autoFillOrders` trigger races the UI's 2s poll; nothing in the
-  front end ever holds operator authority.
-- Local tokens are unsigned sandbox JWTs (`api.ts`); production swaps in your
-  OAuth2/OIDC provider unchanged.
+  front end ever holds operator authority — literally: there is no code path
+  left in `api.ts` that constructs a token for any party but the one
+  currently logged in.
+- Session tokens are real (RS256, signature-verified against a published
+  JWKS), minted by `../server`; production points that server's identity
+  step at a real OAuth2/OIDC provider instead of the demo's role picker.

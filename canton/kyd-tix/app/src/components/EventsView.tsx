@@ -5,11 +5,12 @@
 import { useState } from "react";
 import type Ledger from "@daml/ledger";
 import { Event, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
-import { DemoParties, coverHues, fmtMoney, placeOrder, useQuery } from "../api";
+import { DemoParties, QueryResult, coverHues, fmtMoney, placeOrder } from "../api";
 import { useToast } from "../Toast";
 
 interface Props {
-  catalog: Ledger;
+  events: QueryResult<Event>;
+  allocs: QueryResult<TierAllocation>;
   fanLedger: Ledger;
   fan: string;
   parties: DemoParties;
@@ -19,7 +20,8 @@ interface Props {
 }
 
 export default function EventsView({
-  catalog,
+  events,
+  allocs,
   fanLedger,
   fan,
   parties,
@@ -27,8 +29,6 @@ export default function EventsView({
   onNeedFunds,
   onPurchased,
 }: Props) {
-  const events = useQuery(catalog, Event);
-  const allocs = useQuery(catalog, TierAllocation);
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
 

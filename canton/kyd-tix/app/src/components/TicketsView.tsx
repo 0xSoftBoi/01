@@ -7,18 +7,17 @@ import { QRCodeSVG } from "qrcode.react";
 import type Ledger from "@daml/ledger";
 import { Ticket, ResaleOffer, GiftOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
 import { Event, PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
-import { coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
+import { QueryResult, coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
 import { useToast } from "../Toast";
 
 interface Props {
-  catalog: Ledger;
+  events: QueryResult<Event>;
   fanLedger: Ledger;
   fan: string;
   otherFans: { party: string; label: string }[];
 }
 
-export default function TicketsView({ catalog, fanLedger, fan, otherFans }: Props) {
-  const events = useQuery(catalog, Event);
+export default function TicketsView({ events, fanLedger, fan, otherFans }: Props) {
   const tickets = useQuery(fanLedger, Ticket);
   const offers = useQuery(fanLedger, ResaleOffer);
   const gifts = useQuery(fanLedger, GiftOffer);
