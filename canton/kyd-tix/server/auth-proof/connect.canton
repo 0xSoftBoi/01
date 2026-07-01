@@ -1,0 +1,4 @@
+// Bring the network up and connect the participant to the domain.
+nodes.local.start()
+p1.domains.connect_local(mydomain)
+println("CANTON_READY participant=p1 connected=" + p1.domains.active("mydomain"))

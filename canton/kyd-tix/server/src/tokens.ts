@@ -44,3 +44,42 @@ export async function issueLedgerToken(subject: string, grant: TokenGrant): Prom
     .setExpirationTime(now + grant.expiresInSeconds)
     .sign(privateKey);
 }
+
+// A wildcard-authority token — NOT exposed via any HTTP route. Used only by
+// one-off ledger-setup tooling (server/auth-proof/mint-admin-token.ts) for
+// package/party management (DAR upload, party allocation) against a
+// participant that now requires auth for every ledger-api call.
+//
+// `sub` MUST be `participant_admin` — the well-known default user every
+// Canton participant provisions at boot with ParticipantAdmin rights. Found
+// live, the hard way, on a real jwt-rs-256-jwks-configured participant:
+//   - Omitting `sub` entirely fails token PARSING outright ("Could not read
+//     value for sub") — there is no sub-less admin-claims path.
+//   - `sub` set to anything else (even with `admin: true` alongside it)
+//     fails authorization with UserNotFound — every token's `sub` is looked
+//     up as a Daml participant User, unconditionally.
+//   - `participant_admin` IS a real, pre-provisioned User, so its
+//     ParticipantAdmin rights are what actually authorize DAR upload and
+//     party allocation here — `admin: true` in the ledger-api claims blob
+//     is not, on its own, load-bearing on this participant/SDK version.
+// See server/README.md for what this means for the rest of this server's
+// token model (which issues plain actAs/readAs claims, not user-scoped
+// tokens) — a real, scoped follow-up, not yet closed.
+export async function issueAdminToken(expiresInSeconds: number): Promise<string> {
+  const { privateKey, kid } = await keySet();
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({
+    "https://daml.com/ledger-api": {
+      ledgerId: LEDGER_ID,
+      applicationId: APPLICATION_ID,
+      admin: true,
+    },
+  })
+    .setProtectedHeader({ alg: "RS256", kid })
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setSubject("participant_admin")
+    .setIssuedAt(now)
+    .setExpirationTime(now + expiresInSeconds)
+    .sign(privateKey);
+}
