@@ -5,8 +5,9 @@ privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
 (13 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
-suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10, -11,
--12) are fixed/resolved**; the remaining items are LOW/INFO (by-design or
+suppression. **All HIGH findings (KYD-01, -08, -11, -12, -13) are fixed and all
+MEDIUM findings (KYD-02, -09, -10) are resolved**; KYD-14 is an accepted
+liveness residual, and the remaining items are LOW/INFO (by-design or
 accepted).
 
 ## Trust model
@@ -14,7 +15,7 @@ accepted).
 | Party | Powers | Bounded by |
 | --- | --- | --- |
 | **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, freeze a holding without its owner's consent (KYD-11), redirect a locked holding anywhere but its declared recipient (KYD-11), comp-issue tickets, reprice, rewrite the lender register (KYD-01), fund a fill with cash the order's fan doesn't own (KYD-12), or refund escrow unilaterally |
-| **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, comp/reprice without the operator (KYD-08), or burn tickets early — check-in is bounded to a doors window (KYD-10) |
+| **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, comp/reprice without the operator (KYD-08), burn tickets early — check-in is bounded to a doors window (KYD-10) — or settle an open-round lender's committed funds to itself without booking the loan (KYD-13) |
 | **Artist** | Co-signs events; repricing; receives royalties | Cannot issue, spend, or alter financing |
 | **Fan** | Signs purchase orders (authorizing exactly one payment); owns tickets | Resale gated by price cap; redeemed tickets non-transferable |
 | **Lender** | Commits/uncommits to raises; trades tranches; receives waterfall payments | KYC-gated (membership); cannot touch tickets, events, or other lenders' positions |
@@ -247,6 +248,102 @@ operator alone cannot release or bypass-settle a revenue-share receipt
 (needs venue); every legitimate route (the async lock → later unilateral
 venue settlement; the operator+venue sweep) still works unchanged.
 
+### KYD-13 — Open-round venue could settle a lender's commitment to itself with no loan booked (HIGH, fixed)
+
+The invited financing path (`FinancingOffering`) and the open path
+(`OpenOfferingListing`, added for KYD-09's privacy split) settle a committed
+lender's locked funds to the venue in structurally different ways — and the
+open path opened a theft hole the invited path never had.
+
+In the invited path, settlement is a **plain function**,
+`settleCommitmentToVenue`, called only from inside `Offering_Activate`, which
+asserts the raise is fully subscribed (`committed == target`) and books the
+`SyndicatedLoan` — settle and loan-booking are one atomic transaction, with no
+standalone way to move a commitment note to the venue.
+
+In the open path, settlement was a **ledger choice**,
+`OpenCommitment_SettleToVenue`, with `controller venue`:
+
+```daml
+choice OpenCommitment_SettleToVenue : ContractId Cash
+  controller venue                       -- the hole
+  do exercise locked (Cash_SettleLocked with newOwner = venue)
+```
+
+Because `OpenCommitment` is signed by `operator, lender`, the operator's
+authority that `Cash_SettleLocked` requires is ambient in the choice body, and
+the commitment lock fixes `lockRecipient = venue` with no co-signer. So the
+**venue alone**, as its own top-level submission — entirely outside
+`Listing_Activate` — could settle any committed lender's locked note to itself,
+taking the principal **without creating any loan or tranche**. The lender,
+whose funds are gone, is left with no on-ledger claim: no `SyndicatedLoan`
+observer entry, no `Tranche`, nothing. The venue is an untrusted borrower in
+the trust model, so this is the top severity class — funds move to the party
+that benefits, without proper authorization.
+
+**Fixed** by changing the controller from `venue` to `operator`, restoring
+parity with the invited path's trust model: only the operator-as-agent mediates
+commitment settlement. The legitimate activation path is unaffected —
+`Listing_Activate` runs on the operator-signed `OpenOfferingListing`, so the
+operator's authority is present there and the nested settle is authorized —
+while a standalone `submit venue` can no longer supply the operator authority
+the settle now requires (a root exercise's controllers must be in the
+submitter's `actAs` set). The residual "operator settles a commitment to the
+venue as part of honest activation automation" is the same accepted
+operator-trust posture the invited path already carries (assumption #1) and is
+blessed by `testLockedFundsCustody`.
+Verified by `testOpenCommitmentCustody` (the venue's standalone settle is
+rejected; the committed funds stay in the lender's own custody; the lender's
+`OpenCommitment_Uncommit` escape still reclaims them in full). The suite fails
+if the controller is reverted to `venue`, so the guard is proven, not asserted.
+
+### KYD-14 — Revenue-share locks never expire, stranding a closed facility's carved shares (MEDIUM, accepted liveness residual)
+
+`Allocation_IssuePaid` carves the lenders' revenue share out of each paid sale
+and locks it in place with **`expiresAt = None`**:
+
+```daml
+let shareLock = Lock with
+      holders = [operator]
+      expiresAt = None          -- no expiry, unlike commitment locks
+      ...
+```
+
+The share is deliberately non-expirable while a facility is live: the funds are
+owed to lenders, so — unlike a pre-activation *commitment* (KYD-02), whose
+`Cash_UnlockExpired` safety valve is safe because the money is still the
+lender's — letting the venue reclaim a revenue share unilaterally would let it
+steal the lenders' capture. That much is correct by design.
+
+The gap is at the **end of a facility's life**. `Allocation_IssuePaid` carves a
+share whenever the allocation's `financingShareBps > 0`, with no check that a
+`SyndicatedLoan` still exists (deliberately — a hot-path `lookupByKey` on the
+loan is exactly the contention/portability cost the sharded design removes; see
+`Kyd/Event.daml`). So once a loan is fully repaid and archived (or was never
+raised for a carve-configured event), further paid sales keep minting
+`RevenueShare` receipts whose locked cash has **no sweep target**. The only way
+to free that cash is `Receipt_Refund`, which needs **operator and venue**
+jointly — there is no unilateral venue escape and no expiry to reclaim against.
+A stuck or uncooperative operator therefore freezes the venue's own
+post-repayment money indefinitely.
+
+Impact is bounded to **liveness, not loss** — the funds stay owned by the venue
+throughout, nothing settles wrongly — and it falls within residual assumption
+\#1 (the operator runs release/refund automation honestly and promptly). It is
+recorded here rather than silently accepted because it is an *asymmetry* with
+KYD-02: the expirable-lock safety valve that closes "a stuck operator freezes
+funds forever" for commitments was never extended to revenue shares, and the
+naïve extension (adding `Cash_UnlockExpired` reach) would be a security
+regression (a venue reclaiming lenders' live capture). A safe fix is a *guarded*
+venue reclaim conditioned on the absence of a live facility for
+`(operator, eventId)` — provable on-ledger only by threading a "facility
+closed" attestation (co-signed at repayment) that `Receipt_Refund` could accept
+from the venue alone. Proposed test (not yet implemented): after a loan is fully
+repaid and archived, a subsequent paid sale's `RevenueShare` can still be
+returned to the venue without the operator's live cooperation. Until then the
+operator's sweep/refund automation and orphaned-receipt monitoring are the
+mitigation.
+
 ## Attack coverage (`daml/Kyd/SecurityTest.daml`)
 
 | Suite | Attacks proven impossible |
@@ -264,6 +361,7 @@ venue settlement; the operator+venue sweep) still works unchanged.
 | `testGiftAndRefundSecurity` | Non-owner gifting; self-gifts; third-party gift acceptance; fan self-refunds; wrong-amount refunds; refunding/gifting redeemed tickets |
 | `testCommittedFundsLockedInPlace` | A committed lender's funds stay in the lender's own custody but become unspendable (no transfer, no split) the instant they're committed |
 | `testPurchaseOrderCashOwnership` | A fill funded with cash the order's fan doesn't own — e.g. the operator's own cash (KYD-12) — is rejected; the identical order funded with the fan's own cash still fills |
+| `testOpenCommitmentCustody` | An open-round venue settling a lender's locked commitment to itself with no loan booked (KYD-13) — rejected; the lender's funds stay in its own custody and its uncommit escape still reclaims them |
 
 ## Residual assumptions
 
