@@ -17,9 +17,11 @@ npm run dev                   # http://localhost:5173
 | --- | --- | --- |
 | ![Discover tab](../docs/screenshots/01-discover.png) | ![My Tickets QR pass](../docs/screenshots/02-my-tickets.png) | ![Wallet top-up](../docs/screenshots/03-wallet.png) |
 
-Screenshots are the production build (`npm run build && npm run preview`)
-against a real running stack — the full gallery, including the venue and
-artist roles, is in the [top-level README](../README.md#the-product-app).
+Screenshots are the production build running the standalone demo
+(`VITE_DEMO_MODE=true npm run build && npm run preview`) — the exact bundle
+behind the [live demo](https://01-35l7.vercel.app); the full gallery,
+including the venue and artist roles, is in the
+[top-level README](../README.md#the-product-app).
 
 ## What the demo shows
 
