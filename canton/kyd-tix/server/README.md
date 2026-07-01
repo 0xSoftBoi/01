@@ -22,11 +22,19 @@ Now:
   server; `GET /.well-known/jwks.json` publishes only the public half
   (`src/keys.ts`, `src/jwks.ts`). A browser holding one of these tokens
   cannot mint another — it never had the private key.
+- **Tokens carry a real Daml identity, not just a claim.** `src/userManagement.ts`
+  provisions (idempotently) a Daml `User` for each logging-in party, granted
+  `CanActAs`/`CanReadAs` for exactly that party, via a short-lived
+  admin-scoped session — because a real Canton participant resolves a
+  token's `sub` through its own User Management unconditionally; a token's
+  own `actAs`/`readAs` claims aren't sufficient on their own (found live,
+  see `auth-proof/` below).
 - **The operator credential lives here, and only here.** `LedgerSession`
   (`src/ledgerSession.ts`) mints its own tokens on the operator's behalf and
-  talks to the JSON API directly. `identity.ts`'s `loginable` map is built
-  *without* the operator — `/auth/login` can never hand a browser one of
-  its tokens, no matter what it's asked for.
+  talks to the JSON API directly, provisioning its own Daml User the same
+  way. `identity.ts`'s `loginable` map is built *without* the operator —
+  `/auth/login` can never hand a browser one of its tokens, no matter what
+  it's asked for.
 - **Catalog reads are proxied**, not client-held. `GET /catalog`
   (`src/catalog.ts`) runs the events/allocations query under the operator
   session and returns plain JSON — the browser gets data, never a
@@ -57,11 +65,13 @@ DEMO_PARTIES_PATH=../app/public/demo-parties.json npm run dev   # :4001
 npm test
 ```
 
-19 tests, no ledger required: token issuance/verification round-trips
+26 tests, no ledger required: token issuance/verification round-trips
 (including a genuine HTTP fetch of `/.well-known/jwks.json` against a live
 server in `test/jwks.test.ts` — the same fetch-and-verify a real relying
-party performs), the auth route's operator exclusion, HMAC signature
-accept/reject on the webhook route, and the catalog proxy.
+party performs), signing-key persistence across process restarts, Daml User
+provisioning (create, then idempotent grant-fallback if the user already
+exists), the auth route's operator exclusion, HMAC signature accept/reject
+on the webhook route, and the catalog proxy.
 
 ## What's proven vs. documented
 
@@ -90,40 +100,43 @@ touches the ledger was wrapped in `asyncRoute.ts`.
 | A ledger-side failure degrades to a 502, not a crashed process | **Proven live** (see the bug note above) — `asyncRoute.ts` + `test/psp.test.ts`, `test/catalog.test.ts` |
 | The browser never holds an operator-scoped ledger token | **Proven** — `app/src/api.ts` has no path left that constructs one; `catalog`/`topUp` go through this server |
 | The signing key survives a process restart / is shared across processes (`SIGNING_KEY_PATH`) | **Proven** — `test/keys.test.ts` (deterministic RFC 7638 thumbprint `kid`, so two separate process invocations loading the same persisted key agree without coordinating) |
-| **Canton's own ledger-api verifies these tokens' signatures, not just this server** | **Proven live** — `auth-proof/` (`./run.sh`, ~30-60s): a real, single-participant Canton configured with a `jwt-rs-256-jwks` auth-service pointed at this server's own `/.well-known/jwks.json`. Five real Canton verdicts, not app-level ones: a legitimate admin token **accepted** for a real ledger call; a token forged with a *different* signing key **rejected**; a bit-flipped copy of a real token **rejected**; no token at all **rejected**; a validly-signed token naming a `sub` with no provisioned rights **rejected**. |
+| Daml User provisioning is idempotent (create, or grant if already exists) | **Proven** — `test/userManagement.test.ts` |
+| **Canton's own ledger-api verifies these tokens' signatures AND authorizes a real fan login, end to end** | **Proven live** — `auth-proof/` (`./run.sh`, ~30-60s). See below. |
 
-### What that live run corrected
+### What the live proof actually does, and what it found along the way
 
-Running it surfaced a real fact about this Daml SDK/participant version that
-changes the plan for full production auth, found the hard way rather than
-assumed:
+`auth-proof/run.sh` boots a real, single-participant Canton configured with
+a `jwt-rs-256-jwks` auth-service pointed at this server's own
+`/.well-known/jwks.json`, then checks six real Canton verdicts — not
+app-level ones:
 
-**Every token's `sub` is resolved through Canton's own User Management,
-unconditionally** — even a token carrying an explicit `actAs`/`readAs`
-claims blob (the format `tokens.ts` issues for every fan/venue/artist
-login) is rejected with `UserNotFound` unless `sub` names a Daml `User`
-that has actually been granted `CanActAs`/`CanReadAs` rights via
-`UserManagementService`. There is no legacy bypass for this on the
-participant config tested here. The one `sub` that *does* work out of the
-box is the well-known `participant_admin` user every participant
-provisions at boot (see `tokens.ts`'s `issueAdminToken`) — and even that
-only has package/party-management rights, not an implicit "act as any
-party."
+1. A legitimate admin token (`sub=participant_admin`) — **accepted** for a
+   real ledger call.
+2. A token forged with a *different* signing key — **rejected**.
+3. A bit-flipped copy of a real token — **rejected**.
+4. No token at all — **rejected**.
+5. A validly-signed token naming an unprovisioned `sub` — **rejected**.
+6. **A genuine fan login through this server's own `/auth/login`,
+   presented to the real ledger-api for an ordinary `/v1/query` — accepted.**
 
-Concretely, this means the auth **signing and verification mechanism** is
-proven end to end (that's what `auth-proof/` demonstrates), but **the rest
-of this server's token model — issuing plain actAs/readAs claims for
-fan/venue/artist logins — has not itself been run against a
-signature-verifying participant**, and per the finding above, it would be
-rejected as-is. The real fix, scoped precisely rather than left vague: this
-server needs to provision a Daml `User` (via `UserManagementService`, using
-an admin-scoped session held only here — same custody-boundary principle as
-the operator credential) for each party the first time it logs in, granting
-it `CanActAs`/`CanReadAs` for that party, and set `sub` to that user's id
-rather than the raw party string. That's a real, understood follow-up, not
-"wire up a config line" — called out honestly rather than claimed, the same
-standard this repo holds the CIP-56 official-package swap to (see
-`HANDOFF.md`).
+Step 6 is the thing that mattered and, on the first pass, didn't work: this
+Daml SDK's participant resolves **every** token's `sub` through Canton's own
+User Management, unconditionally — a token carrying an explicit
+`actAs`/`readAs` claims blob (what `tokens.ts` always issued) was rejected
+with `UserNotFound` unless `sub` named a Daml `User` actually granted
+`CanActAs`/`CanReadAs` rights. There is no legacy bypass for this on the
+participant config tested here. `src/userManagement.ts` closes it:
+`ensureUserForParty` provisions that `User` (idempotently, via a
+short-lived admin session, same custody-boundary principle as the operator
+credential) the moment a party first logs in, and `identity.ts`/
+`ledgerSession.ts` set `sub` to that user's id instead of the raw party
+string.
+
+A second, smaller thing the live run caught: `tokens.ts`'s `ledgerId` claim
+was hardcoded to `"sandbox"` — correct for `daml sandbox` (why it went
+unnoticed), wrong for any real Canton participant, which defaults its
+ledger id to its own node name. `LEDGER_ID` is now an env var
+(`auth-proof/run.sh` sets it to `p1`, matching `canton.conf`).
 
 ### Running the live proof
 
@@ -143,3 +156,16 @@ canton.participants.<name>.ledger-api.auth-services = [{
   target-audience = "https://kyd-tix-ledger/"   # must match tokens.ts's AUDIENCE
 }]
 ```
+
+### What's still not wired
+
+Wiring the same `auth-services` config into `integration/run-local.sh`'s
+plain `daml sandbox` (which manages its own opaque participant config, not
+a hand-authored `canton.conf`) is still open — that would need the same
+raw-`canton.jar daemon -c canton.conf` approach `privacy-proof/` and
+`auth-proof/` already use for topology control, applied to the actual demo
+stack. A real IdP behind `/auth/login` in place of the demo's role picker,
+and TLS everywhere, are also still open. None of these are config lines;
+they're real, scoped work, called out rather than claimed — the same
+standard this repo holds the CIP-56 official-package swap to (see
+`HANDOFF.md`).
