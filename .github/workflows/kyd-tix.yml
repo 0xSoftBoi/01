@@ -70,3 +70,21 @@ jobs:
         run: |
           export PATH="$HOME/.daml/bin:$PATH"
           cd app && npm install --no-audit --no-fund && npm run build
+
+  server:
+    name: Auth/catalog/payments server — type-check + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: canton/kyd-tix/server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm install
+        run: npm install --no-audit --no-fund
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Test (no ledger required — see server/README.md)
+        run: npm test

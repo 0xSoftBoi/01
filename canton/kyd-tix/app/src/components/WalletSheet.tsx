@@ -1,26 +1,25 @@
 // The wallet, made tangible: balance front and center, card on-ramp with
 // preset amounts. No addresses, no tokens, no gas — money in, tickets out.
 import { useState } from "react";
-import { DemoParties, fmtMoney, topUp } from "../api";
+import { fmtMoney, topUp } from "../api";
 import { useToast } from "../Toast";
 
 interface Props {
-  parties: DemoParties;
-  fan: string;
+  fanToken: string;
   balance: number;
   onClose: () => void;
 }
 
 const PRESETS = [25, 50, 100];
 
-export default function WalletSheet({ parties, fan, balance, onClose }: Props) {
+export default function WalletSheet({ fanToken, balance, onClose }: Props) {
   const toast = useToast();
   const [busy, setBusy] = useState<number | null>(null);
 
   const add = async (amount: number) => {
     setBusy(amount);
     try {
-      await topUp(parties, fan, amount);
+      await topUp(fanToken, amount);
       toast("ok", `${fmtMoney(amount)} added to your balance`);
       onClose();
     } catch {
@@ -53,8 +52,9 @@ export default function WalletSheet({ parties, fan, balance, onClose }: Props) {
           ))}
         </div>
         <p className="muted small">
-          Demo on-ramp: in production your card clears with the payment provider and
-          the balance is minted server-side — same one-tap feel, real money.
+          Balance is minted server-side, only after a signature-verified charge event —
+          the same path a real PSP webhook (Stripe, Adyen) would trigger. This demo
+          simulates the card processor; the mint code itself is the production path.
         </p>
         <button className="ghost wide" onClick={onClose}>
           Done

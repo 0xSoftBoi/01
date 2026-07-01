@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import Ledger from "@daml/ledger";
 import type { ContractId, Template } from "@daml/types";
 import { Cash } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Cash";
-import { PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
+import { Event, PurchaseOrder, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 
 // ---------------------------------------------------------------------------
 // Demo identities
@@ -38,28 +38,56 @@ export async function loadDemoParties(): Promise<DemoParties> {
 }
 
 // ---------------------------------------------------------------------------
-// Sandbox tokens (local development only). The sandbox does not verify token
-// signatures; in production these come from your OAuth2/OIDC provider.
+// Session: a real, server-issued, RS256-signed token — see server/src/*.
+// "Logging in" as a demo role now genuinely exchanges that role for a
+// short-lived credential minted by the server (which holds the only signing
+// key), instead of the browser forging its own unsigned token for whichever
+// party it likes. The server's `loginable` map (server/src/identity.ts) never
+// includes the operator, so this call can never hand back operator authority.
 
-function base64url(s: string): string {
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+export interface Session {
+  token: string;
+  party: string;
 }
 
-export function sandboxToken(party: string, readAs: string[] = []): string {
-  const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    "https://daml.com/ledger-api": {
-      ledgerId: "sandbox",
-      applicationId: "kyd-tix-app",
-      actAs: [party],
-      readAs,
-    },
-  };
-  return [base64url(JSON.stringify(header)), base64url(JSON.stringify(payload)), "kyd"].join(".");
+async function login(partyKey: RoleKey): Promise<Session> {
+  const res = await fetch("/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ partyKey }),
+  });
+  if (!res.ok) throw new Error("login failed");
+  return (await res.json()) as Session;
 }
 
-export function ledgerFor(party: string): Ledger {
-  return new Ledger({ token: sandboxToken(party), httpBaseUrl: `${window.location.origin}/` });
+function ledgerFromToken(token: string): Ledger {
+  return new Ledger({ token, httpBaseUrl: `${window.location.origin}/` });
+}
+
+// Re-logs in whenever the selected role changes (switching identity in the
+// demo == a fresh login). Returns null while the exchange is in flight.
+export function useSession(partyKey: RoleKey | null): { session: Session | null; ledger: Ledger | null } {
+  const [session, setSession] = useState<Session | null>(null);
+  useEffect(() => {
+    if (!partyKey) {
+      setSession(null);
+      return;
+    }
+    let live = true;
+    setSession(null);
+    login(partyKey)
+      .then((s) => {
+        if (live) setSession(s);
+      })
+      .catch(() => {
+        if (live) setSession(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [partyKey]);
+  const ledger = useMemo(() => (session ? ledgerFromToken(session.token) : null), [session]);
+  return { session, ledger };
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +130,49 @@ export function useQuery<T extends object, K>(
   return { contracts, loading };
 }
 
+// Public catalog reads, proxied through the server's own operator session
+// (server/src/catalog.ts) instead of the browser holding an operator-scoped
+// Ledger. Same polling shape as useQuery so the views barely change.
+export interface CatalogResult {
+  events: QueryResult<Event>;
+  allocs: QueryResult<TierAllocation>;
+}
+
+interface CatalogResponse {
+  events: QueryResult<Event>["contracts"];
+  allocs: QueryResult<TierAllocation>["contracts"];
+}
+
+export function useCatalog(): CatalogResult {
+  const [events, setEvents] = useState<QueryResult<Event>["contracts"]>([]);
+  const [allocs, setAllocs] = useState<QueryResult<TierAllocation>["contracts"]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let live = true;
+    const fetchOnce = async () => {
+      try {
+        const res = await fetch("/catalog");
+        if (!res.ok) return;
+        const body = (await res.json()) as CatalogResponse;
+        if (live) {
+          setEvents(body.events);
+          setAllocs(body.allocs);
+          setLoading(false);
+        }
+      } catch {
+        // keep last good state; the stack may still be booting
+      }
+    };
+    fetchOnce();
+    const t = setInterval(fetchOnce, 800);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  return { events: { contracts: events, loading }, allocs: { contracts: allocs, loading } };
+}
+
 // ---------------------------------------------------------------------------
 // Money. Daml Decimals arrive as strings; the fan just sees dollars.
 
@@ -132,20 +203,17 @@ export function usePendingOrders(ledger: Ledger, fan: string) {
   return contracts.filter((c) => c.payload.fan === fan);
 }
 
-// Simulated card on-ramp. In production the payment provider's webhook mints
-// the app balance server-side after the card clears; the demo performs that
-// operator-side mint directly so the wallet flow is tangible.
-export async function topUp(parties: DemoParties, fan: string, amount: number): Promise<void> {
-  const operatorLedger = ledgerFor(parties.operator);
-  await operatorLedger.create(Cash, {
-    operator: parties.operator,
-    owner: fan,
-    amount: amount.toFixed(10),
-    lock: null,
-    lockRecipient: null,
-    lockCoSigner: null,
-    observers: [],
+// Card on-ramp: calls the server's customer-facing top-up endpoint with the
+// fan's OWN session token (server/src/payments.ts) — the mint itself only
+// ever happens inside processPspWebhook after a real HMAC signature check
+// (server/src/psp.ts). No operator credential is reachable from here.
+export async function topUp(fanToken: string, amount: number): Promise<void> {
+  const res = await fetch("/payments/topup", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${fanToken}` },
+    body: JSON.stringify({ amount }),
   });
+  if (!res.ok) throw new Error("top-up failed");
 }
 
 // Find (or carve) a note of exactly `amount` from the party's balance —

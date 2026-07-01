@@ -8,10 +8,11 @@ for KYD).
 ## One-command map
 
 ```
-make test     # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
-make app      # web app: codegen + type-check + production build
-make demo     # local stack: sandbox + seed + JSON API + 3 triggers
-              # then: cd app && npm run dev  (web)  /  ios/KYDFan (Xcode)
+make test        # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
+make server-test # auth/catalog/payments server: 19 tests, no ledger required
+make app         # web app: codegen + type-check + production build
+make demo        # local stack: sandbox + seed + JSON API + server + 3 triggers
+                 # then: cd app && npm run dev  (web)  /  ios/KYDFan (Xcode)
 ```
 
 CI (`.github/workflows/kyd-tix.yml`) runs the Daml suite and the web build on
@@ -29,25 +30,44 @@ every push touching this tree.
 | CIP-56 integration | `Cash` implements `Holding`; `Kyd.Registry` implements the standard `TransferFactory`/`AllocationFactory`/`Allocation`. Resale + transfers tested through these real factories. NOT yet run against live Canton Coin/USDCx package ids (swap the vendored DAR for the official releases). |
 | iOS app (`ios/KYDFan`) | Source-complete, no dependencies, same API contract as the verified web app — but **not compiled** (no macOS CI leg). Expect a first-build pass on a Mac. |
 | Validator ops (`validator/`) | Documentation + runbook with sourced commands. No node was stood up from this repo. |
+| Auth/catalog/payments server (`server/`) | **19 tests, no ledger required**: real RS256 token issuance and verification (including a genuine HTTP fetch of the JWKS endpoint), the login route's operator exclusion, HMAC signature accept/reject on the PSP webhook, the catalog proxy. See `server/README.md` for exactly what's proven vs. still documented-only (Canton's own signature verification of these tokens isn't yet wired into `run-local.sh`'s plain `daml sandbox`). |
 
 ## Production gaps, in priority order
 
-1. **Auth**: replace sandbox unsigned JWTs (`app/src/api.ts`,
-   `ios .../LedgerClient.swift`) with OAuth2/OIDC in front of the JSON API;
-   TLS everywhere. The token shape is already production-form.
+1. **Auth — substantially closed.** `server/` replaces the old unsigned,
+   browser-forged sandbox tokens (`app/src/api.ts`'s old `sandboxToken`, and
+   the analogous spot in `ios .../LedgerClient.swift`, still unconverted)
+   with real RS256-signed, short-lived tokens issued server-side
+   (`server/src/tokens.ts`), verifiable against a published JWKS
+   (`server/src/jwks.ts`) — the same mechanism Canton's participant
+   `jwt-rs-256-jwks` auth-service consumes. What's real: the browser can no
+   longer mint its own token for any party (including the operator); the
+   operator credential now lives only inside `server/`. What's left: wiring
+   that same `auth-services` config into a real running Canton participant
+   (documented with the exact config in `server/README.md`, not yet
+   live-tested in this environment — the `daml sandbox` CLI wrapper doesn't
+   expose participant config directly; needs the raw `canton.jar daemon -c`
+   approach `privacy-proof/` already uses), a real IdP behind `/auth/login`
+   in place of the demo's role picker, and TLS everywhere.
 2. **Real money**: swap `Kyd.Cash` for CIP-56 holdings (Canton Coin/USDCx).
    All settlement — resale, commitments, and revenue shares — already speaks
    the standard `Holding`/`Allocation`/factory interfaces with lock-in-place
-   custody (audit KYD-02 resolved), so this is a `Kyd.Registry` dependency
-   change plus replacing the vendored interface package with the official DARs
-   (one daml.yaml line).
-3. **Catalog service**: the demo reads the catalog with the operator party
-   from the browser; production puts that read behind a backend endpoint
-   (same trust model, no operator-readable token in any client).
-4. **PSP on-ramp**: `topUp` is the webhook handler's job server-side.
+   custody (audit KYD-02, KYD-11 resolved), so this is a `Kyd.Registry`
+   dependency change plus replacing the vendored interface package with the
+   official DARs (one daml.yaml line).
+3. **Catalog service — closed.** `GET /catalog` (`server/src/catalog.ts`)
+   proxies the events/allocations read through the server's own operator
+   session; the browser gets plain JSON, never an operator-scoped token.
+4. **PSP on-ramp — closed.** `POST /webhooks/psp`
+   (`server/src/webhook.ts`) is the real external route; the demo's
+   `POST /payments/topup` (`server/src/payments.ts`) drives the identical,
+   signature-checked mint path (`server/src/psp.ts`) rather than a separate
+   client-side mint.
 5. **Featured App wiring**: emit `FeaturedAppActivityMarker`s from the trigger
    submissions (validator/RUNBOOK.md §3 has the emission points).
-6. **iOS**: first Xcode build, then real auth + push notifications for offers.
+6. **iOS**: first Xcode build, then swap `LedgerClient.swift`'s unsigned
+   token for a real `/auth/login` call against `server/`, then push
+   notifications for offers.
 
 ## Key design decisions (don't re-litigate without reading these)
 
@@ -65,6 +85,7 @@ every push touching this tree.
 daml/                 the model (8 modules) + 4 test modules
 splice-token-standard/ vendored CIP-56 interfaces (separate package, SCU rule)
 app/                  web product (React/TS, PWA-installable)
+server/               auth/catalog/payments — the custody boundary (server/README.md)
 ios/KYDFan/           native fan app (SwiftUI, XcodeGen)
 integration/          JSON API config, local stack script, headless client
 validator/            network strategy (README) + operational runbook

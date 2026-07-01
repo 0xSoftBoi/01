@@ -50,7 +50,10 @@ demand-curve inventory control, the TIX register and pending escrows; the
 artist watches royalties accrue from every resale. Architecture notes — why
 the catalog reads via the operator while every action signs as the fan, and
 why "no wallets" is the hosted-party model, not a hack — in
-[app/README.md](app/README.md).
+[app/README.md](app/README.md). The operator credential itself lives
+server-side only ([server/README.md](server/README.md)): real RS256-signed
+login tokens, a proxied catalog read, and a mint path gated by webhook
+signature verification — the browser never holds operator authority.
 
 ---
 

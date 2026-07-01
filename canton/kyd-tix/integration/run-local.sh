@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Boot the full local stack: sandbox ledger + demo seed + HTTP JSON API + the
-# operator's automation triggers. Then run the product UI with:
+# operator's automation triggers + the auth/catalog/payments server. Then run
+# the product UI with:
 #   cd app && npm run codegen && npm install && npm run dev
 #
-# Prereq: `daml` on PATH (https://get.daml.com). Ctrl-C tears the stack down.
+# Prereq: `daml` on PATH (https://get.daml.com), Node on PATH. Ctrl-C tears
+# the stack down.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,7 +15,7 @@ daml build --all
 # 1. Sandbox ledger on :6865, preloaded with the DAR.
 daml sandbox --dar "$DAR" --port 6865 &
 SANDBOX_PID=$!
-trap 'kill $SANDBOX_PID ${JSONAPI_PID:-} ${FILL_PID:-} ${SWEEP_PID:-} ${ACCRUE_PID:-} 2>/dev/null || true' EXIT
+trap 'kill $SANDBOX_PID ${JSONAPI_PID:-} ${SERVER_PID:-} ${FILL_PID:-} ${SWEEP_PID:-} ${ACCRUE_PID:-} 2>/dev/null || true' EXIT
 sleep 10
 
 # 2. Seed the demo world (parties, events, shards, financing, fan balances)
@@ -26,11 +28,19 @@ daml script --dar "$DAR" --script-name Kyd.Demo:setup \
 OPERATOR=$(tr -d ' \n' < app/public/demo-parties.json | sed -n 's/.*"operator":"\([^"]*\)".*/\1/p')
 echo "Operator party: $OPERATOR"
 
-# 3. HTTP JSON API on :7575 — the bridge the web app calls.
+# 3. HTTP JSON API on :7575 — the bridge the web app and the server below
+#    both call.
 daml json-api --config integration/json-api.conf &
 JSONAPI_PID=$!
 
-# 4. Operator automation: auto-fill purchase orders (price-aware shard
+# 4. Auth/catalog/payments server on :4001 — the custody boundary in front of
+#    the ledger (server/README.md). Issues real RS256-signed session tokens,
+#    holds the operator credential server-side only, and is the sole path to
+#    minting app-balance Cash (gated by webhook signature verification).
+( cd server && (test -d node_modules || npm install --no-audit --no-fund) && npm run start ) &
+SERVER_PID=$!
+
+# 5. Operator automation: auto-fill purchase orders (price-aware shard
 #    matching), batch revenue sweeps, and nightly late-interest accrual.
 daml trigger --dar "$DAR" --trigger-name Kyd.Triggers:autoFillOrders \
   --ledger-host localhost --ledger-port 6865 --ledger-party "$OPERATOR" &
@@ -42,6 +52,6 @@ daml trigger --dar "$DAR" --trigger-name Kyd.Triggers:accrueLateInterest \
   --ledger-host localhost --ledger-port 6865 --ledger-party "$OPERATOR" &
 ACCRUE_PID=$!
 
-echo "Stack up: JSON API on http://localhost:7575."
+echo "Stack up: JSON API on http://localhost:7575, auth/catalog/payments server on http://localhost:4001."
 echo "Now: cd app && npm run codegen && npm install && npm run dev"
 wait
