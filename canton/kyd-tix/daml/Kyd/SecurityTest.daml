@@ -17,7 +17,7 @@ import Kyd.Event
 import Kyd.Settlement
 import Kyd.Ticket
 import Kyd.Tix
-import Kyd.Test (setupCast, mint, cashOf, makeEvent, openGA, setupLoan, buy, makeOffering)
+import Kyd.Test (setupCast, mint, cashOf, makeEvent, openGA, setupLoan, buy, makeOffering, onboard)
 
 -- 1. Cash integrity: only the operator can issue; only the owner can move,
 --    split or merge; overdrafts are unrepresentable.
@@ -351,3 +351,49 @@ testPurchaseOrderCashOwnership = do
     operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n50
   _ <- submit c.operator $ exerciseCmd order2 (PurchaseOrder_Fill with allocationCid = alloc)
   pure ()
+
+-- 14. Open-round commitment custody (audit KYD-13): in the OPEN financing path
+--     the venue must not be able to settle a lender's locked commitment to
+--     itself as a standalone transaction — that would take the lender's
+--     principal without booking any loan or tranche, stranding it with no
+--     claim. Settlement is operator-mediated (parity with the invited path,
+--     where it is a plain function reachable only inside activation), so a lone
+--     `submit venue` cannot supply the operator authority the settle requires;
+--     the committed funds stay in the lender's own custody, and the lender's
+--     uncommit escape hatch still returns them in full.
+testOpenCommitmentCustody : Script ()
+testOpenCommitmentCustody = do
+  c <- setupCast
+  onboard c c.lender Lender
+  off <- submitMulti [c.operator, c.venue] [] $ createCmd OpenOfferingListing with
+    operator = c.operator
+    venue = c.venue
+    public = c.public
+    eventId = "SHOW-OPEN"
+    target = 1000.0
+    factorRateBps = 11000
+    revenueShareBps = 5000
+    dueDate = time (date 2026 Aug 1) 0 0 0
+    lateInterestBpsPerDay = 10
+    raised = 0.0
+  n600 <- mint c c.lender 600.0
+  (_off2, com1) <- submitMulti [c.lender] [c.public] $
+    exerciseCmd off (Listing_Commit with lender = c.lender, cashCid = n600)
+
+  -- The attack: the venue alone tries to grab the committed funds without
+  -- booking the loan. It must fail — the settle now needs operator authority,
+  -- which a standalone venue submission cannot provide.
+  submitMustFail c.venue $ exerciseCmd com1 OpenCommitment_SettleToVenue
+
+  -- The lender's principal is still locked in its OWN custody, unspendable but
+  -- safe (not moved to the venue).
+  bal <- cashOf c.lender
+  bal === 0.0
+  [(_lockedCid, locked)] <- query @Cash c.lender
+  locked.owner === c.lender
+
+  -- The lender's own safety valve is unaffected: it can always uncommit and
+  -- reclaim its funds in full.
+  _ <- submit c.lender $ exerciseCmd com1 OpenCommitment_Uncommit
+  reclaimed <- cashOf c.lender
+  reclaimed === 600.0

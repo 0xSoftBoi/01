@@ -297,8 +297,23 @@ template OpenCommitment
       do exercise locked Cash_Unlock
 
     -- | On activation, the committed funds settle to the venue as principal.
+    --   Controller is the OPERATOR, not the venue (audit KYD-13). With
+    --   `controller venue` this choice was independently exercisable by the
+    --   venue as its own top-level transaction: because 'OpenCommitment' is
+    --   operator-signed, the operator authority 'Cash_SettleLocked' needs is
+    --   ambient in the body, and the lock's recipient is the venue with no
+    --   co-signer — so a venue could settle a lender's locked commitment to
+    --   itself WITHOUT booking the loan, stranding the lender with no tranche
+    --   and no claim. (The invited path never exposed this: there, settlement
+    --   is the plain function 'settleCommitmentToVenue', reachable only inside
+    --   'Offering_Activate', which asserts full subscription and books the loan
+    --   atomically.) Requiring the operator restores parity with the invited
+    --   path's trust model — only the operator-as-agent mediates commitment
+    --   settlement. The legitimate path is unaffected: 'Listing_Activate' runs
+    --   on the operator-signed listing, so the operator authority is present
+    --   there, while a standalone `submit venue` can no longer supply it.
     choice OpenCommitment_SettleToVenue : ContractId Cash
-      controller venue
+      controller operator
       do exercise locked (Cash_SettleLocked with newOwner = venue)
 
 -- | The syndicate's claim on the venue. Repayment is enforced two ways:
