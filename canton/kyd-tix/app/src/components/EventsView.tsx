@@ -5,7 +5,7 @@
 import { useState } from "react";
 import type Ledger from "@daml/ledger";
 import { Event, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
-import { DemoParties, QueryResult, coverHues, fmtMoney, placeOrder } from "../api";
+import { DemoParties, QueryResult, coverHues, coverImage, fmtMoney, placeOrder } from "../api";
 import { track } from "../analytics";
 import { useToast } from "../Toast";
 
@@ -70,24 +70,38 @@ export default function EventsView({
           .map((a) => a.payload)
           .filter((a) => Number(a.sold) < Number(a.size))
           .sort((a, b) => Number(a.price) - Number(b.price));
-        const when = new Date(ev.eventTime).toLocaleString(undefined, {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-        });
+        const when = new Date(ev.eventTime)
+          .toLocaleString(undefined, {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })
+          .toUpperCase();
+        const venueName = ev.venue.split("::")[0].replace(/-/g, " ");
         return (
           <article className="event-card" key={ev.eventId}>
             <div
               className="cover"
               style={{
-                background: `linear-gradient(135deg, hsl(${h1} 70% 38%), hsl(${h2} 80% 22%))`,
+                backgroundImage: `linear-gradient(135deg, hsl(${h1} 62% 32%), hsl(${h2} 70% 18%))`,
               }}
             >
+              <img
+                className="cover-img"
+                src={coverImage(ev.eventId)}
+                alt=""
+                loading="lazy"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
               <div className="cover-text">
+                <span className="eyebrow cover-eyebrow">
+                  {venueName} · {when}
+                </span>
                 <h2>{ev.name}</h2>
-                <span>{when}</span>
               </div>
             </div>
             <div className="levels">

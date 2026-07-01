@@ -316,9 +316,34 @@ export async function placeOrder(
   });
 }
 
-// Deterministic cover art: event id -> a stable gradient hue pair.
+// Deterministic cover art: event id -> a stable gradient hue pair. Kept as the
+// graceful fallback behind the photographic cover (coverImage) when an image
+// fails to load.
 export function coverHues(seed: string): [number, number] {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
   return [h, (h + 50) % 360];
+}
+
+// Image-forward covers, like the real kydlabs.com: a curated set of live-music
+// photographs (Unsplash, permissive license) served from its CDN — no artist
+// assets borrowed, no image bundled into the app. A deterministic hash keeps
+// each event on a stable photo. `w`/`q`/`auto=format` let the CDN hand back a
+// right-sized, modern-format image per card.
+const COVER_PHOTOS = [
+  "photo-1470229722913-7c0e2dbbafd3", // crowd under stage lights
+  "photo-1501281668745-f7f57925c3b4", // singer at the mic
+  "photo-1516450360452-9312f5e86fc7", // guitarist silhouette
+  "photo-1524368535928-5b5e00ddc76b", // festival haze
+  "photo-1493225457124-a3eb161ffa5f", // hands up in the crowd
+  "photo-1459749411175-04bf5292ceea", // stage rig, warm light
+  "photo-1533174072545-7a4b6ad7a6c3", // intimate club set
+  "photo-1506157786151-b8491531f063", // amp + neon
+];
+
+export function coverImage(seed: string, width = 720): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % COVER_PHOTOS.length;
+  const id = COVER_PHOTOS[h];
+  return `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&q=70`;
 }
