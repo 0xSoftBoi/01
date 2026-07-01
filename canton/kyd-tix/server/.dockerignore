@@ -1,0 +1,13 @@
+# NOTE: daml.js/ is intentionally NOT ignored — it is a gitignored-but-required
+# file: dependency that the Dockerfile COPYies from the working tree.
+node_modules
+dist
+data/
+*.db
+test
+*.test.ts
+auth-proof
+npm-debug.log
+Dockerfile
+.dockerignore
+README.md
