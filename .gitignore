@@ -7,6 +7,11 @@ audit/lib/
 **/.daml/
 **/dist/
 **/daml.js/
+# Vercel's git-integration build for app/ has no Daml SDK to run `daml
+# codegen js`, so app/daml.js (only) is committed as a build artifact —
+# regenerate (`cd canton/kyd-tix/app && npm run codegen`) and recommit
+# whenever the Daml model changes.
+!canton/kyd-tix/app/daml.js/
 **/node_modules/
 *.dar
 canton/kyd-tix/log/
