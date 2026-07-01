@@ -6,9 +6,11 @@ import { keySet } from "./keys.js";
 // docs.daml.com/canton/usermanual/apis.html — `auth-services = [{ type =
 // jwt-rs-256-jwks, url = "<issuer>/.well-known/jwks.json", target-audience =
 // "<AUDIENCE>" }]`). These constants are the values both this issuer and that
-// participant config must agree on; see integration/README.md.
-export const ISSUER = "https://auth.kyd-tix.example/";
-export const AUDIENCE = "https://kyd-tix-ledger/";
+// participant config must agree on; see integration/README.md. Env-overridable
+// like LEDGER_ID below: a real deployment's issuer/audience/ledger id are all
+// participant/environment-specific, not just this repo's own dev defaults.
+export const ISSUER = process.env.TOKEN_ISSUER ?? "https://auth.kyd-tix.example/";
+export const AUDIENCE = process.env.TOKEN_AUDIENCE ?? "https://kyd-tix-ledger/";
 // A real ledger-api command (not admin/party-management ones — those don't
 // check this) rejects with LEDGER_ID_MISMATCH if the token's ledgerId claim
 // doesn't match the participant's actual one, found live: `daml sandbox`
@@ -26,6 +28,26 @@ export interface TokenGrant {
   expiresInSeconds: number;
 }
 
+// Shared signing sequence behind issueLedgerToken/issueAdminToken below —
+// both are the same RS256 JWT shape (iss/aud/sub/iat/exp over a
+// ledger-api-claims payload), differing only in the claims and subject.
+async function signLedgerJwt(
+  subject: string,
+  ledgerApiClaims: Record<string, unknown>,
+  expiresInSeconds: number,
+): Promise<string> {
+  const { privateKey, kid } = await keySet();
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ "https://daml.com/ledger-api": ledgerApiClaims })
+    .setProtectedHeader({ alg: "RS256", kid })
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setSubject(subject)
+    .setIssuedAt(now)
+    .setExpirationTime(now + expiresInSeconds)
+    .sign(privateKey);
+}
+
 // A real RS256-signed ledger access token: standard OAuth2 claims
 // (iss/aud/sub/exp) a relying party verifies against our JWKS, carrying the
 // Daml "custom claims" grant (actAs/readAs) that authorizes ledger actions.
@@ -33,24 +55,12 @@ export interface TokenGrant {
 // `sandboxToken`), a holder cannot mint a new one for a different party —
 // they never touch the private key, only ever receive a token this server
 // chose to issue for the specific grant it decided to give them.
-export async function issueLedgerToken(subject: string, grant: TokenGrant): Promise<string> {
-  const { privateKey, kid } = await keySet();
-  const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({
-    "https://daml.com/ledger-api": {
-      ledgerId: LEDGER_ID,
-      applicationId: APPLICATION_ID,
-      actAs: grant.actAs,
-      readAs: grant.readAs ?? [],
-    },
-  })
-    .setProtectedHeader({ alg: "RS256", kid })
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
-    .setSubject(subject)
-    .setIssuedAt(now)
-    .setExpirationTime(now + grant.expiresInSeconds)
-    .sign(privateKey);
+export function issueLedgerToken(subject: string, grant: TokenGrant): Promise<string> {
+  return signLedgerJwt(
+    subject,
+    { ledgerId: LEDGER_ID, applicationId: APPLICATION_ID, actAs: grant.actAs, readAs: grant.readAs ?? [] },
+    grant.expiresInSeconds,
+  );
 }
 
 // A wildcard-authority token — NOT exposed via any HTTP route. Used only by
@@ -58,9 +68,10 @@ export async function issueLedgerToken(subject: string, grant: TokenGrant): Prom
 // package/party management (DAR upload, party allocation) against a
 // participant that now requires auth for every ledger-api call.
 //
-// `sub` MUST be `participant_admin` — the well-known default user every
-// Canton participant provisions at boot with ParticipantAdmin rights. Found
-// live, the hard way, on a real jwt-rs-256-jwks-configured participant:
+// `subject` defaults to `participant_admin` — the well-known default user
+// every Canton participant provisions at boot with ParticipantAdmin rights —
+// and real setup tooling should never override it. Found live, the hard way,
+// on a real jwt-rs-256-jwks-configured participant:
 //   - Omitting `sub` entirely fails token PARSING outright ("Could not read
 //     value for sub") — there is no sub-less admin-claims path.
 //   - `sub` set to anything else (even with `admin: true` alongside it)
@@ -70,24 +81,9 @@ export async function issueLedgerToken(subject: string, grant: TokenGrant): Prom
 //     ParticipantAdmin rights are what actually authorize DAR upload and
 //     party allocation here — `admin: true` in the ledger-api claims blob
 //     is not, on its own, load-bearing on this participant/SDK version.
-// See server/README.md for what this means for the rest of this server's
-// token model (which issues plain actAs/readAs claims, not user-scoped
-// tokens) — a real, scoped follow-up, not yet closed.
-export async function issueAdminToken(expiresInSeconds: number): Promise<string> {
-  const { privateKey, kid } = await keySet();
-  const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({
-    "https://daml.com/ledger-api": {
-      ledgerId: LEDGER_ID,
-      applicationId: APPLICATION_ID,
-      admin: true,
-    },
-  })
-    .setProtectedHeader({ alg: "RS256", kid })
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
-    .setSubject("participant_admin")
-    .setIssuedAt(now)
-    .setExpirationTime(now + expiresInSeconds)
-    .sign(privateKey);
+// (The `subject` override exists only so auth-proof/prove.ts's "unprovisioned
+// user is rejected" assertion can build that negative case from this same
+// real signing path instead of reimplementing it by hand.)
+export function issueAdminToken(expiresInSeconds: number, subject = "participant_admin"): Promise<string> {
+  return signLedgerJwt(subject, { ledgerId: LEDGER_ID, applicationId: APPLICATION_ID, admin: true }, expiresInSeconds);
 }

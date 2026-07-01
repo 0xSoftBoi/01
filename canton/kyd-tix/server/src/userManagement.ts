@@ -1,5 +1,6 @@
 import { Ledger as DamlLedger, UserRightHelper, type UserRight } from "@daml/ledger";
 import { issueAdminToken } from "./tokens.js";
+import { normalizeBaseUrl } from "./httpUtil.js";
 
 // Daml user ids disallow `::` (party ids are `hint::fingerprint`), so a
 // login token's `sub` can't just be the party string. Deterministic and
@@ -35,15 +36,27 @@ export async function provisionUser(provisioner: UserProvisioner, userId: string
   }
 }
 
-function jsonApiUrl(base: string): string {
-  return base.endsWith("/") ? base : `${base}/`;
-}
+// Provisioning is idempotent on the ledger, but still costs an admin-token
+// mint plus one or two ledger round-trips — real cost to pay on every login
+// for a user that's already provisioned. Cached per process by userId, with
+// the entry evicted on failure so a transient error doesn't permanently wedge
+// that party's logins.
+const provisioned = new Map<string, Promise<void>>();
 
 // The real entry point: mints a short-lived admin token (never exposed via
 // any HTTP route — same principle as auth-proof's setup tooling and the
 // operator credential itself) and provisions against the actual ledger.
-export async function ensureUserForParty(jsonApiBaseUrl: string, userId: string, party: string): Promise<void> {
-  const token = await issueAdminToken(60);
-  const ledger = new DamlLedger({ token, httpBaseUrl: jsonApiUrl(jsonApiBaseUrl) });
-  return provisionUser(ledger, userId, party);
+export function ensureUserForParty(jsonApiBaseUrl: string, userId: string, party: string): Promise<void> {
+  const cached = provisioned.get(userId);
+  if (cached) return cached;
+  const promise = (async () => {
+    const token = await issueAdminToken(60);
+    const ledger = new DamlLedger({ token, httpBaseUrl: normalizeBaseUrl(jsonApiBaseUrl) });
+    await provisionUser(ledger, userId, party);
+  })().catch((err: unknown) => {
+    provisioned.delete(userId);
+    throw err;
+  });
+  provisioned.set(userId, promise);
+  return promise;
 }

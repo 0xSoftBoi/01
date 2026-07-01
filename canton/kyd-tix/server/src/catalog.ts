@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { Event, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
+import { asyncRoute } from "./asyncRoute.js";
 import type { QueryableLedger } from "./ledgerSession.js";
 
 // Public catalog data (events, tier allocations), proxied through the
@@ -9,8 +10,9 @@ import type { QueryableLedger } from "./ledgerSession.js";
 // to read this).
 export function catalogRouter(operatorSession: QueryableLedger) {
   const router = Router();
-  router.get("/catalog", async (_req, res) => {
-    try {
+  router.get(
+    "/catalog",
+    asyncRoute(async (_req, res) => {
       const [events, allocs] = await Promise.all([
         operatorSession.query(Event),
         operatorSession.query(TierAllocation),
@@ -19,9 +21,7 @@ export function catalogRouter(operatorSession: QueryableLedger) {
         events: events.map((c) => ({ contractId: c.contractId, payload: c.payload })),
         allocs: allocs.map((c) => ({ contractId: c.contractId, payload: c.payload })),
       });
-    } catch (err) {
-      res.status(502).json({ error: String(err) });
-    }
-  });
+    }),
+  );
   return router;
 }
