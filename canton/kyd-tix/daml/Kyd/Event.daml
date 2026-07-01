@@ -220,7 +220,12 @@ template TierAllocation
                 expiresAt = None
                 expiresAfter = None
                 context = Some ("KYD revenue share: " <> eventId)
-          locked <- exercise shareSlice (Cash_Lock with newLock = shareLock)
+          -- The operator is the legitimate recipient (a transient hop before
+          -- fan-out to lenders), so the recipient check alone can't stop
+          -- self-dealing here (audit KYD-11) — the venue is bound in as a
+          -- required co-signer for the eventual settle.
+          locked <- exercise shareSlice
+            (Cash_Lock with newLock = shareLock, newLockRecipient = operator, newLockCoSigner = Some venue)
           _ <- create RevenueShare with operator, venue, eventId, amount = share, locked
           pure ()
         mintFromAllocation this fan

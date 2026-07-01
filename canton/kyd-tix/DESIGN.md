@@ -99,6 +99,18 @@ freeze funds forever, so locks are **expirable**: allocations expire at
 `Cash_UnlockExpired` lets the holder reclaim unilaterally past expiry (CIP-56's
 expired-lock guidance; `testCommitmentExpiryReclaim`).
 
+**Destination binding (implemented, audit KYD-11).** Lock-in-place only
+restrains the *owner*; nothing initially restrained the *operator*, who holds
+every lock. `Cash_SettleLocked` — the release primitive underneath every
+wrapper (`Receipt_Release`, commitment settlement, CIP-56 allocation
+execution) — now records `lockRecipient` when a lock is created and only
+ever releases to that party, and `Cash_Lock` itself requires the owner's
+consent, not the operator's alone. The one case where the operator *is* the
+legitimate recipient (the revenue-share fan-out hop) additionally requires
+the venue as a `lockCoSigner`, live if attempted as a standalone call —
+closing the gap where the operator could take custody of a receipt and never
+run the waterfall. See `AUDIT.md` KYD-11 and `testLockedFundsCustody`.
+
 **Open question for KYD.** Expiry horizon for **revenue-share** locks — they
 currently have no deadline (no natural per-sale maturity); should they expire at
 the event date, and what's the right grace period before a venue can reclaim an

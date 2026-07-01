@@ -61,7 +61,7 @@ lockCommitment operator venue lender ref dueDate cashCid = do
         expiresAt = Some dueDate
         expiresAfter = None
         context = Some ("KYD financing commitment: " <> ref)
-  exercise disclosed (Cash_Lock with newLock = commitLock)
+  exercise disclosed (Cash_Lock with newLock = commitLock, newLockRecipient = venue, newLockCoSigner = None)
 
 -- | Release a pending commitment back to its lender (unlock in place).
 unlockCommitment : LenderCommitment -> Update (ContractId Cash)

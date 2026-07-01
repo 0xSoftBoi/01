@@ -99,7 +99,8 @@ template KydAllocationFactory
               expiresAt = Some spec.settlement.settleBefore
               expiresAfter = None
               context = Some ("KYD allocation: " <> spec.settlement.settlementRef.id)
-        locked <- exercise disclosed (Cash_Lock with newLock = registryLock)
+        locked <- exercise disclosed
+          (Cash_Lock with newLock = registryLock, newLockRecipient = leg.receiver, newLockCoSigner = None)
         allocCid <- create KydAllocation with operator, spec, locked
         pure AllocationInstructionResult with
           output = AllocationInstructionResult_Completed with

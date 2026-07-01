@@ -3,16 +3,17 @@
 Self-audit of the Daml model in `daml/`, written against the authorization,
 privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
-(11 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
+(12 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
-suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10) are
-fixed/resolved**; the remaining items are LOW/INFO (by-design or accepted).
+suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10, -11)
+are fixed/resolved**; the remaining items are LOW/INFO (by-design or
+accepted).
 
 ## Trust model
 
 | Party | Powers | Bounded by |
 | --- | --- | --- |
-| **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, comp-issue tickets, reprice, rewrite the lender register (KYD-01), or refund escrow unilaterally |
+| **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, freeze a holding without its owner's consent (KYD-11), redirect a locked holding anywhere but its declared recipient (KYD-11), comp-issue tickets, reprice, rewrite the lender register (KYD-01), or refund escrow unilaterally |
 | **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, comp/reprice without the operator (KYD-08), or burn tickets early — check-in is bounded to a doors window (KYD-10) |
 | **Artist** | Co-signs events; repricing; receives royalties | Cannot issue, spend, or alter financing |
 | **Fan** | Signs purchase orders (authorizing exactly one payment); owns tickets | Resale gated by price cap; redeemed tickets non-transferable |
@@ -151,6 +152,57 @@ seed dates its checkable show "tonight").
 Verified by `testEarlyCheckInBlocked` (months-early check-in rejected; the same
 scan succeeds at showtime).
 
+### KYD-11 — Lock-in-place custody was enforceable only against the owner, not the operator (HIGH, fixed)
+
+KYD-02 resolved custody by locking funds in place rather than moving them to
+operator ownership — but the primitive that *releases* a lock,
+`Cash_SettleLocked`, was `controller operator` alone, with an unconstrained
+`newOwner` parameter and no check that the holding was even locked. Because
+this choice lives on `Cash` (issuer-signed by the operator only — no other
+party's signature to draw on), it was independently exercisable by the
+operator on **any** `Cash` contract id it could read, standalone, bypassing
+every higher-level wrapper (`Receipt_Release`, `settleCommitmentToVenue`,
+`OpenCommitment_SettleToVenue`, the CIP-56 `Allocation`'s execute path). In
+practice this meant the operator, holding nothing but its own key, could:
+
+1. **Steal any note outright** — `Cash_SettleLocked` never checked the
+   holding was locked, so it worked identically on a fan's, artist's, or
+   venue's plain spendable balance.
+2. **Freeze arbitrary funds** — `Cash_Lock` was also `controller operator`
+   alone, so a lock (step 1's prerequisite, if we'd merely added an
+   is-locked check) could be created on any party's cash without their
+   consent.
+3. **Redirect a legitimately locked holding to itself** — even for holdings
+   locked through a real workflow (a lender's financing commitment, a CIP-56
+   DvP allocation), `newOwner` was a free parameter, so the operator could
+   settle the lock to itself instead of the venue or the true receiver.
+4. **Take custody of a revenue-share receipt and simply keep it** — the one
+   case where operator custody *is* legitimate (the revenue-share fan-out
+   hop before `Loan_SweepRevenue` pays lenders pro rata), `Receipt_Release`'s
+   `controller operator` meant the operator could call it as its own
+   standalone transaction, archive the receipt, and never continue to the
+   waterfall — no on-ledger obligation survives to force the payout.
+
+This defeated lock-in-place custody's whole premise: a lock only restrains
+the *owner*; nothing previously restrained the *operator*, the party who
+actually holds every lock in the system. **Fixed** with two `Cash` fields set
+when a lock is created and enforced when it is released: `lockRecipient`
+(the only party `Cash_SettleLocked` may hand the note to — closes items 1
+and 3, and via `Cash_Lock` now requiring `controller operator, owner`, item
+2) and `lockCoSigner` (an extra required controller, used only where the
+declared recipient is the operator itself — closes item 4, since
+`Loan_SweepRevenue` still runs under operator authority alone by inheriting
+the venue's authority from `SyndicatedLoan`'s own signatories, while a
+standalone call needs the venue live). `Receipt_Release` is now
+`controller operator, venue` for the same reason, closing the wrapper-level
+route in addition to the direct one.
+Verified by `testLockedFundsCustody`: a never-locked note cannot be settled;
+the operator cannot lock Alice's cash without her; a locked commitment
+cannot be redirected to the operator (only ever to its true venue); the
+operator alone cannot release or bypass-settle a revenue-share receipt
+(needs venue); every legitimate route (the async lock → later unilateral
+venue settlement; the operator+venue sweep) still works unchanged.
+
 ## Attack coverage (`daml/Kyd/SecurityTest.daml`)
 
 | Suite | Attacks proven impossible |
@@ -159,6 +211,7 @@ scan succeeds at showtime).
 | `testIssuanceAuthorization` | Non-venue allocation opening; comp-minting or repricing by operator/venue/artist *alone* (both required, KYD-08); venue self-filling paid orders |
 | `testFinancedVenueCannotStarveLenders` | A financed venue comping the house or repricing to ~0 unilaterally (KYD-08) — all three economic levers blocked without the operator |
 | `testReceiptCustody` | Unilateral refund by venue or operator; venue exercising release |
+| `testLockedFundsCustody` | Operator settling a never-locked note (KYD-11); freezing a party's cash without consent; redirecting a locked commitment or revenue-share receipt to itself instead of its declared recipient; bypassing `Receipt_Release` via a direct `Cash_SettleLocked` call |
 | `testRegisterIntegrity` | Operator rewriting the register alone (KYD-01); phantom sellers; buyer withdrawing a seller's offer; seller accepting for the buyer |
 | `testForeignReceiptRejected` | Sweeping one event's receipts through another event's loan |
 | `testResaleSecurity` | Double-listing a ticket; third party accepting an offer; paying with another's note or short amount; non-venue check-in; double check-in |

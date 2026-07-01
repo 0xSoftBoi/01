@@ -71,9 +71,9 @@ setup = do
     lateInterestBpsPerDay = 10
     invited = [lender, lender2]
     commitments = []
-  nA <- submit operator $ createCmd Cash with operator, owner = lender, amount = 600.0, lock = None, observers = []
+  nA <- submit operator $ createCmd Cash with operator, owner = lender, amount = 600.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
   off2 <- submit lender $ exerciseCmd off (Offering_Commit with lender, cashCid = nA)
-  nB <- submit operator $ createCmd Cash with operator, owner = lender2, amount = 400.0, lock = None, observers = []
+  nB <- submit operator $ createCmd Cash with operator, owner = lender2, amount = 400.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
   off3 <- submit lender2 $ exerciseCmd off2 (Offering_Commit with lender = lender2, cashCid = nB)
   _ <- submit venue $ exerciseCmd off3 Offering_Activate
 
@@ -94,7 +94,7 @@ setup = do
   _ <- submit venue $ exerciseCmd ev2 (Event_OpenAllocation with tierId = "GA", size = 10)
 
   -- Fund the fans' app balances.
-  _ <- submit operator $ createCmd Cash with operator, owner = alice, amount = 500.0, lock = None, observers = []
-  _ <- submit operator $ createCmd Cash with operator, owner = bob, amount = 500.0, lock = None, observers = []
+  _ <- submit operator $ createCmd Cash with operator, owner = alice, amount = 500.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
+  _ <- submit operator $ createCmd Cash with operator, owner = bob, amount = 500.0, lock = None, lockRecipient = None, lockCoSigner = None, observers = []
 
   pure DemoParties with ..
