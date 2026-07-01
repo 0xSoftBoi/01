@@ -1302,7 +1302,33 @@ td {
   }
 
   .header-right {
-    gap: 8px;
+    gap: 6px;
+  }
+
+  /* Narrow screens: the header is busy (logo, tabs, wallet, bell, avatar), so
+     drop the redundant role label (the avatar already conveys it), collapse
+     the wallet-connect chip to icon-only, and tighten the trailing controls —
+     otherwise the row overflows and the avatar clips at the edge. */
+  .header-right > span.muted.small {
+    display: none;
+  }
+
+  .avatar {
+    width: 32px;
+    height: 32px;
+  }
+
+  .bell {
+    width: 32px;
+    height: 32px;
+  }
+
+  .wc-chip-label {
+    display: none;
+  }
+
+  .wc-chip.connect {
+    padding: 6px 9px;
   }
 
   /* The dropdown becomes a full-width sheet fixed under the sticky header. */

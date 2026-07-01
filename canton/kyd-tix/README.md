@@ -63,12 +63,15 @@ server-side only ([server/README.md](server/README.md)): real RS256-signed
 login tokens, a proxied catalog read, and a mint path gated by webhook
 signature verification — the browser never holds operator authority.
 
-Screenshots below are the production build (`npm run build && npm run
-preview`), driven against a real running stack — sandbox, JSON API, the
-auth/catalog/payments server and the operator triggers — not mocked. The
-"My Tickets" pass and the "2/5 sold" tier counter are the same purchase: a
-fan buy that the operator's fill trigger settled on-ledger between the two
-screenshots.
+Screenshots below are the production build running the standalone demo
+(`VITE_DEMO_MODE=true`) — the exact bundle behind the
+[live demo](https://01-35l7.vercel.app), whose in-browser simulation returns
+the same numbers as a real stack (see
+[app/README](app/README.md#standalone-demo-build-no-canton-behind-it)). The
+warm-dark theme, Inter + IBM Plex Mono, mono eyebrow labels and photographic
+event covers mirror the real kydlabs.com product. The "My Tickets" pass and
+the "1 / 5 sold" tier counter are the same purchase: a fan buy the operator's
+fill loop settled between the two screenshots.
 
 | Fan: Discover | Fan: My Tickets (live QR) | Fan: Wallet top-up |
 | --- | --- | --- |
