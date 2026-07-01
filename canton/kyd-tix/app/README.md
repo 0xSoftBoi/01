@@ -41,6 +41,32 @@ Switch roles in the header — each role acts under its OWN party's authority:
   automatically from every capped resale, plus per-show fan visibility (the
   artist signs the event, so fan data is theirs by construction).
 
+## Standalone demo build (no Canton behind it)
+
+`npm run dev`/`preview` above talks to a real running stack. There is also a
+`VITE_DEMO_MODE=true` build (`vercel.json` sets it automatically) that swaps
+every network call in `api.ts` for `src/demo/mock.ts` — an in-browser
+simulation good enough to host the exact same UI standalone, e.g. on Vercel,
+with no Canton participant, JSON API or server behind it at all:
+
+```
+VITE_DEMO_MODE=true npm run build && npm run preview
+```
+
+`demo/mock.ts` is not a stub — it reimplements the actual choice logic
+(`Cash_Split`/`Merge`, `Ticket_Offer`/`_CheckIn`, `ResaleOffer_Accept`,
+`Event_OpenAllocation`, …) against a plain in-memory store, seeded with the
+same numbers as `Kyd.Demo:setup`, plus two `setInterval` loops standing in for
+the `autoFillOrders`/`sweepRevenue` triggers. `exactNote` and `placeOrder` in
+`api.ts` are untouched between the two modes — they're written against the
+generic `Ledger` shape (`query`/`create`/`exercise`), so they run identically
+against the mock as against the real `@daml/ledger` client. A `DEMO` badge in
+the header and the wallet sheet's copy make clear when a deploy is running
+this simulation rather than talking to a live ledger. A build with
+`VITE_DEMO_MODE=true` set produces byte-identical numbers to the real stack
+for the same sequence of actions (verified: the TIX lender-outstanding figures
+after one GA sale match exactly between the two modes).
+
 ## UX-architecture notes (the part that matters)
 
 - **No wallets anywhere.** Fan parties are hosted on the operator's validator;
