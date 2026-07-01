@@ -12,6 +12,7 @@ import {
   useSession,
 } from "./api";
 import { ToastProvider } from "./Toast";
+import Logo from "./Logo";
 import EventsView from "./components/EventsView";
 import TicketsView from "./components/TicketsView";
 import DoorView from "./components/DoorView";
@@ -50,9 +51,7 @@ function Boot({ error }: { error: boolean }) {
   return (
     <div className="boot">
       <div className="boot-card">
-        <div className="brand xl">
-          KYD<span className="dot">.</span>
-        </div>
+        <Logo size="xl" tagline />
         {error ? (
           <>
             <p>The local stack isn't running yet.</p>
@@ -155,7 +154,7 @@ export default function App() {
       <div className="shell">
         <header>
           <div className="brand">
-            KYD<span className="dot">.</span>
+            <Logo />
             {DEMO_MODE && (
               <span className="demo-badge" title="Simulated in your browser — no live Canton ledger behind this deploy">
                 demo
