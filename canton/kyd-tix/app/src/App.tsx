@@ -12,7 +12,9 @@ import {
   useSession,
 } from "./api";
 import { ToastProvider } from "./Toast";
+import { track } from "./analytics";
 import Logo from "./Logo";
+import NotificationsBell from "./components/NotificationsBell";
 import EventsView from "./components/EventsView";
 import TicketsView from "./components/TicketsView";
 import DoorView from "./components/DoorView";
@@ -130,6 +132,7 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
+    track("app_open");
     loadDemoParties()
       .then(setParties)
       .catch(() => setBootError(true));
@@ -166,7 +169,10 @@ export default function App() {
               <button
                 key={t.key}
                 className={`tab ${tab === t.key ? "active" : ""}`}
-                onClick={() => setTab(t.key)}
+                onClick={() => {
+                  setTab(t.key);
+                  track("tab_switched", { tab: t.key });
+                }}
               >
                 {t.label}
               </button>
@@ -176,6 +182,7 @@ export default function App() {
             {roleInfo.kind === "fan" ? null : (
               <span className="muted small">{roleInfo.label}</span>
             )}
+            <NotificationsBell key={party} session={session} />
             <div className="avatar-wrap">
               <button className="avatar" onClick={() => setMenuOpen((o) => !o)}>
                 {roleInfo.short}

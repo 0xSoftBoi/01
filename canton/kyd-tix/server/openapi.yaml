@@ -1,0 +1,540 @@
+openapi: 3.1.0
+info:
+  title: KYD Ticketing Server
+  version: 0.1.0
+  description: >
+    Custody boundary in front of the ledger: RS256/JWKS token issuance, an
+    operator-session proxy for catalog reads and PSP-triggered Cash minting,
+    plus the operational data plane (notifications, analytics, health,
+    metrics) backed by the server's own SQLite store. Every authenticated
+    route verifies the bearer token against this server's own JWKS; the
+    acting party is always the token's `sub`, never a request field.
+
+servers:
+  - url: http://localhost:4001
+
+tags:
+  - name: auth
+  - name: catalog
+  - name: payments
+  - name: notifications
+  - name: analytics
+  - name: ops
+
+paths:
+  /.well-known/jwks.json:
+    get:
+      tags: [auth]
+      summary: Public signing keys (JWKS)
+      description: >
+        The public half of the token-signing key, in standard JWKS shape.
+        Canton's `jwt-rs-256-jwks` auth-service (and any other relying party)
+        fetches this to verify token signatures.
+      responses:
+        "200":
+          description: The key set (exactly one RS256 key).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      description: RFC 7517 JWK with kid (RFC 7638 thumbprint), alg RS256, use sig.
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in as a seeded demo role
+      description: >
+        Demo stand-in for a real IdP. Issues a short-lived RS256 ledger token
+        scoped to exactly the requested party. The operator role is never
+        loginable. Successful logins are recorded in the users table.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partyKey]
+              properties:
+                partyKey:
+                  type: string
+                  enum: [alice, bob, venue, artist]
+      responses:
+        "200":
+          description: Token issued after the party's Daml User was provisioned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, party, expiresIn]
+                properties:
+                  token: { type: string, description: RS256 JWT }
+                  party: { type: string, description: Daml party id }
+                  expiresIn: { type: integer, description: Seconds until expiry (900). }
+        "403":
+          description: Unknown, missing, or non-loginable party key (including operator).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /catalog:
+    get:
+      tags: [catalog]
+      summary: Public event catalog
+      description: >
+        Events and tier allocations read through the server-held operator
+        session — plain JSON only, no credential ever crosses this boundary.
+      responses:
+        "200":
+          description: Active Event and TierAllocation contracts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, allocs]
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: "#/components/schemas/LedgerContract" }
+                  allocs:
+                    type: array
+                    items: { $ref: "#/components/schemas/LedgerContract" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /payments/topup:
+    post:
+      tags: [payments]
+      summary: Top up the caller's app-cash balance
+      description: >
+        Simulates the PSP round trip in-process: synthesizes the signed
+        charge.succeeded webhook (with a fresh per-request event id, so
+        repeated identical top-ups are distinct deliveries) and runs it
+        through the same processing path as POST /webhooks/psp. Mints for the
+        token's `sub` only.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: number
+                  exclusiveMinimum: 0
+      responses:
+        "200":
+          description: Cash minted for the caller's party.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [minted]
+                properties:
+                  minted: { type: boolean, const: true }
+        "400":
+          description: Amount missing, non-numeric, or not positive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /webhooks/psp:
+    post:
+      tags: [payments]
+      summary: PSP webhook receiver
+      description: >
+        HMAC-SHA256-verified over the exact request bytes. Idempotent per
+        delivery: the event's `id` field (or, absent one, the HMAC of the raw
+        body) is the delivery id; a replay of an already-processed delivery
+        returns 200 with status "duplicate" and mints nothing.
+      parameters:
+        - name: x-webhook-signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-f]{64}$"
+          description: HMAC-SHA256 of the raw body, hex, prefixed "sha256=".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string, description: PSP event id, used as the idempotency key. }
+                type: { type: string, examples: [charge.succeeded] }
+                data:
+                  type: object
+                  properties:
+                    fanParty: { type: string }
+                    amount: { type: number, exclusiveMinimum: 0 }
+      responses:
+        "200":
+          description: Charge processed (minted) or recognized as a replay (duplicate).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [minted]
+                    properties:
+                      minted: { type: boolean, const: true }
+                  - type: object
+                    required: [status]
+                    properties:
+                      status: { type: string, const: duplicate }
+        "202":
+          description: Validly signed but unrecognized event type; acknowledged without action.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ignored]
+                properties:
+                  ignored: { type: boolean, const: true }
+        "400":
+          description: Unparseable payload or malformed charge event.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Signature missing or does not match the body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: List the caller's notifications
+      description: Newest first, capped at 50, scoped to the token's `sub`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notifications]
+                properties:
+                  notifications:
+                    type: array
+                    maxItems: 50
+                    items: { $ref: "#/components/schemas/Notification" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /notifications/read:
+    post:
+      tags: [notifications]
+      summary: Mark notifications read
+      description: >
+        Only rows belonging to the caller are matched; ids owned by other
+        parties are silently skipped (they are unmatchable, not rejected).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  maxItems: 100
+                  items: { type: integer }
+      responses:
+        "200":
+          description: How many of the caller's rows were newly marked read.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: integer }
+        "400":
+          description: ids is not an array of at most 100 integers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /notifications/stream:
+    get:
+      tags: [notifications]
+      summary: Unread-count stream (Server-Sent Events)
+      description: >
+        SSE stream of the caller's unread notification count. The token rides
+        the query string because EventSource cannot set headers; it is
+        verified identically to a Bearer header. The current count is sent
+        immediately, then again whenever it changes (checked every 2s), with
+        a comment heartbeat every 25s. Only the count is pushed — content
+        stays on GET /notifications.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: The same JWT normally sent as a Bearer header.
+      responses:
+        "200":
+          description: >
+            Event stream. Each update frame is
+            `event: notifications` / `data: {"unread": n}`.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                examples:
+                  - |
+                    event: notifications
+                    data: {"unread":2}
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /analytics/events:
+    post:
+      tags: [analytics]
+      summary: Ingest a batch of client funnel events
+      description: >
+        No auth required — the funnel starts before login. If a valid Bearer
+        token is present the party is attached; an invalid token is treated
+        as anonymous rather than rejected. Any invalid item rejects the whole
+        batch (nothing partial is stored).
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, events]
+              properties:
+                sessionId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                events:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                        pattern: "^[a-z][a-z0-9_.]{0,63}$"
+                      props:
+                        description: Arbitrary JSON, at most 2048 bytes serialized.
+      responses:
+        "202":
+          description: Batch accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted]
+                properties:
+                  accepted: { type: integer }
+        "400":
+          description: sessionId, batch size, an event name, or a props payload out of bounds.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /analytics/summary:
+    get:
+      tags: [analytics]
+      summary: Cross-party analytics summary (operator only)
+      description: >
+        Client-event counts by name plus active-contract counts from the
+        indexer's read model (active = not archived). The token's `sub` must
+        be the operator party.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Aggregated funnel and ledger counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clientEvents, ledger]
+                properties:
+                  clientEvents:
+                    type: object
+                    additionalProperties: { type: integer }
+                  ledger:
+                    type: object
+                    required: [events, allocations, ticketsActive, offersOpen, resalesOpen, loansActive]
+                    properties:
+                      events: { type: integer }
+                      allocations: { type: integer }
+                      ticketsActive: { type: integer }
+                      offersOpen: { type: integer, description: Open GiftOffer + TrancheOffer contracts. }
+                      resalesOpen: { type: integer, description: Open ResaleOffer + DvPResaleOffer contracts. }
+                      loansActive: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Valid session, but not the operator.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness probe (legacy)
+      description: Always 200 while the process is up; use /healthz for readiness.
+      responses:
+        "200":
+          description: Process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+
+  /healthz:
+    get:
+      tags: [ops]
+      summary: Readiness with per-dependency checks
+      description: >
+        db = trivial SELECT; signingKey = the JWKS key loads; indexer = last
+        successful run within 5 minutes (reported "disabled", and healthy,
+        when the indexer is deliberately not running); ledger = injected
+        probe (a cheap, timeout-capped operator-session query).
+      responses:
+        "200":
+          description: Every check passed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Healthz" }
+        "503":
+          description: At least one check failed; the body names which.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Healthz" }
+
+  /metrics:
+    get:
+      tags: [ops]
+      summary: Prometheus metrics
+      description: >
+        Text exposition format. Includes http_requests_total{method,route,status}
+        (unmatched paths bucketed as route="other"), indexer_runs_total{result},
+        indexer_last_run_timestamp_seconds, and notifications_created_total{kind}.
+      responses:
+        "200":
+          description: Current metric values.
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples:
+                  - |
+                    # HELP http_requests_total HTTP requests handled, by method/route/status.
+                    # TYPE http_requests_total counter
+                    http_requests_total{method="GET",route="/catalog",status="200"} 3
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        RS256 JWT issued by POST /auth/login and verifiable against
+        /.well-known/jwks.json. The acting party is the token's `sub`.
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or expired session token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UpstreamError:
+      description: The ledger (or another upstream dependency) failed mid-request.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: string, const: internal error }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    LedgerContract:
+      type: object
+      required: [contractId, payload]
+      properties:
+        contractId: { type: string }
+        payload:
+          type: object
+          description: The Daml contract payload as the JSON API encodes it.
+
+    Notification:
+      type: object
+      required: [id, kind, title, body, contractId, createdAt, readAt]
+      properties:
+        id: { type: integer }
+        kind:
+          type: string
+          examples: [offer_received, ticket_delivered, offer_closed]
+        title: { type: string }
+        body: { type: string }
+        contractId:
+          type: [string, "null"]
+          description: The ledger contract that triggered this, when there is one.
+        createdAt: { type: integer, description: Epoch milliseconds. }
+        readAt:
+          type: [integer, "null"]
+          description: Epoch milliseconds, or null while unread.
+
+    Healthz:
+      type: object
+      required: [ok, checks]
+      properties:
+        ok: { type: boolean }
+        checks:
+          type: object
+          required: [db, signingKey, indexer, ledger]
+          properties:
+            db: { $ref: "#/components/schemas/Check" }
+            signingKey: { $ref: "#/components/schemas/Check" }
+            indexer: { $ref: "#/components/schemas/Check" }
+            ledger: { $ref: "#/components/schemas/Check" }
+
+    Check:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        info:
+          type: string
+          description: Failure detail, or "disabled" for a deliberately-off indexer.

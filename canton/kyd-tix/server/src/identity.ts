@@ -8,6 +8,12 @@ const SESSION_SECONDS = 15 * 60;
 
 export type EnsureUserFn = (jsonApiBaseUrl: string, userId: string, party: string) => Promise<void>;
 
+// The one slice of db.ts this router needs (login bookkeeping) — optional so
+// existing callers/tests without a db keep working unchanged.
+export interface LoginRecorder {
+  recordUserLogin(userId: string, party: string, role: string): void;
+}
+
 // The identity step: in production this is a real IdP (password, passkey,
 // federated OIDC) that authenticates a person and hands back which Daml
 // party they're allowed to act as. This demo's identity check is "pick one
@@ -21,7 +27,12 @@ export type EnsureUserFn = (jsonApiBaseUrl: string, userId: string, party: strin
 // `ensureUser` defaults to the real provisioning call (userManagement.ts)
 // but is injectable so tests can stub it out instead of needing a real
 // running ledger.
-export function authRouter(parties: DemoParties, jsonApiBaseUrl: string, ensureUser: EnsureUserFn = ensureUserForParty) {
+export function authRouter(
+  parties: DemoParties,
+  jsonApiBaseUrl: string,
+  ensureUser: EnsureUserFn = ensureUserForParty,
+  db?: LoginRecorder,
+) {
   const router = Router();
   const loginable: Record<string, string> = {
     alice: parties.alice,
@@ -46,6 +57,8 @@ export function authRouter(parties: DemoParties, jsonApiBaseUrl: string, ensureU
       // every login after the first is just a redundant-but-cheap grant.
       const userId = userIdFor(partyKey);
       await ensureUser(jsonApiBaseUrl, userId, partyId);
+      // After provisioning succeeds, so a failed login never records one.
+      db?.recordUserLogin(userId, partyId, partyKey);
       const token = await issueLedgerToken(userId, {
         actAs: [partyId],
         readAs: [partyId],

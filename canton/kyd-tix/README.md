@@ -23,8 +23,12 @@ network plan in [validator/](validator/README.md) with an operational
 [RUNBOOK](validator/RUNBOOK.md); a native **SwiftUI fan app** lives in
 [ios/KYDFan](ios/KYDFan/README.md); [DESIGN.md](DESIGN.md) is the decision
 record (every choice, its best-practice basis, and the open questions for KYD);
-and [HANDOFF.md](HANDOFF.md) maps what is verified, what is scaffolded, and the
-production gaps in priority order.
+[HANDOFF.md](HANDOFF.md) maps what is verified, what is scaffolded, and the
+production gaps in priority order; and [PRODUCTION.md](PRODUCTION.md) is the
+production application design — system architecture, database schema, API
+specification ([server/openapi.yaml](server/openapi.yaml)), event indexing,
+notifications, analytics, deployment ([deploy/](deploy/README.md)), testing
+strategy, and the M1–M4 roadmap.
 Operator
 automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).

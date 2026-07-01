@@ -51,7 +51,12 @@ Built to demonstrate the difference between *writing Daml that compiles* and
   resale, gifting, door scanner, venue financing dashboard), a native SwiftUI
   iOS app, one-command demo (`make demo`), CI, and a
   [HANDOFF.md](canton/kyd-tix/HANDOFF.md) that says plainly what is verified
-  and what is scaffolded. **Live demo:** [01-35l7.vercel.app](https://01-35l7.vercel.app)
+  and what is scaffolded — plus the production tier around the contracts:
+  a ledger indexer feeding a rebuildable SQLite read model, notifications
+  (REST + SSE + in-app bell), product analytics, `/healthz` + Prometheus
+  `/metrics`, an [OpenAPI spec](canton/kyd-tix/server/openapi.yaml), a
+  containerized [deploy](canton/kyd-tix/deploy/), and the whole design in
+  [PRODUCTION.md](canton/kyd-tix/PRODUCTION.md). **Live demo:** [01-35l7.vercel.app](https://01-35l7.vercel.app)
   — the same web app, deployed standalone with no Canton backend behind it
   (`VITE_DEMO_MODE`, see [`app/README.md`](canton/kyd-tix/app/README.md#standalone-demo-build-no-canton-behind-it)).
 

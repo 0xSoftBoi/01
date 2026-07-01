@@ -88,13 +88,20 @@ DEMO_PARTIES_PATH=../app/public/demo-parties.json npm run dev   # :4001
 npm test
 ```
 
-26 tests, no ledger required: token issuance/verification round-trips
+58 tests, no ledger required: token issuance/verification round-trips
 (including a genuine HTTP fetch of `/.well-known/jwks.json` against a live
 server in `test/jwks.test.ts` — the same fetch-and-verify a real relying
 party performs), signing-key persistence across process restarts, Daml User
 provisioning (create, then idempotent grant-fallback if the user already
 exists), the auth route's operator exclusion, HMAC signature accept/reject
-on the webhook route, and the catalog proxy.
+on the webhook route, PSP delivery idempotency (a replayed signed body
+mints exactly once), the catalog proxy, and the data plane added for
+production: SQLite migrations and the narrow `KydDb` surface (`src/db.ts`),
+the ACS poll-and-diff indexer's baseline/transition/archival semantics
+(`src/indexer.ts`), the notifications and analytics routes' auth and
+validation, and `/healthz` + `/metrics`. The full HTTP surface is specified
+in [`openapi.yaml`](openapi.yaml); the architecture it serves is
+[`../PRODUCTION.md`](../PRODUCTION.md).
 
 ## What's proven vs. documented
 

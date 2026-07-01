@@ -22,6 +22,7 @@ import { GiftOffer, ResaleOffer, Ticket } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticke
 import { SyndicatedLoan } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Tix";
 import { RevenueShare } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Settlement";
 import type { DemoParties, RoleKey } from "../api";
+import type { AppNotification } from "../notifications";
 
 // ---------------------------------------------------------------------------
 // Identities — same hint shape as Kyd.Demo:setup's allocatePartyWithHint.
@@ -207,6 +208,67 @@ function pushCash(owner: string, amount: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Notifications — the demo counterpart of the server's /notifications
+// endpoints (consumed via src/notifications.ts). A plain per-party array plus
+// subscribe listeners; the choice handlers and fill loop below push into it
+// on exactly the actions that generate real notifications server-side: an
+// offer or gift addressed to a party, and a purchase fill delivering a
+// ticket.
+
+interface StoredNotification extends AppNotification {
+  party: string;
+}
+
+let notifSeq = 0;
+const notifStore: StoredNotification[] = [];
+const notifListeners = new Set<() => void>();
+
+function emitNotifChange(): void {
+  for (const listener of [...notifListeners]) listener();
+}
+
+function notify(party: string, kind: string, title: string, body: string, contractId: string | null): void {
+  notifSeq += 1;
+  notifStore.push({ id: notifSeq, party, kind, title, body, contractId, createdAt: Date.now(), readAt: null });
+  emitNotifChange();
+}
+
+export function listNotifications(party: string): AppNotification[] {
+  return notifStore
+    .filter((n) => n.party === party)
+    .map(({ id, kind, title, body, contractId, createdAt, readAt }) => ({ id, kind, title, body, contractId, createdAt, readAt }));
+}
+
+export function markNotificationsRead(ids: number[]): number {
+  const at = Date.now();
+  let updated = 0;
+  for (const n of notifStore) {
+    if (n.readAt === null && ids.includes(n.id)) {
+      n.readAt = at;
+      updated += 1;
+    }
+  }
+  if (updated > 0) emitNotifChange();
+  return updated;
+}
+
+export function subscribeNotifications(listener: () => void): () => void {
+  notifListeners.add(listener);
+  return () => {
+    notifListeners.delete(listener);
+  };
+}
+
+function eventNameOf(eventId: string): string {
+  const ev = store.events.find((e) => (e.payload as unknown as { eventId: string }).eventId === eventId);
+  return ev ? (ev.payload as unknown as { name: string }).name : eventId;
+}
+
+function firstName(party: string): string {
+  return party.split("::")[0].replace(/-/g, " ");
+}
+
+// ---------------------------------------------------------------------------
 // The operator's automation, simulated: fill matching purchase orders, then
 // batch-sweep escrowed revenue share into the loan — mirrors
 // Kyd.Triggers.autoFillOrders and sweepRevenue.
@@ -217,8 +279,9 @@ function mintTicket(alloc: Contract<TierAllocation>, fan: string): void {
     tierId: string; price: string; resaleCapBps: number; royaltyBps: number; serialBase: number; size: number; sold: number;
   };
   const serial = a.serialBase + a.sold;
+  const ticketCid = nextId("Ticket");
   store.tickets.push({
-    contractId: nextId("Ticket"),
+    contractId: ticketCid,
     payload: {
       operator: a.operator,
       venue: a.venue,
@@ -234,6 +297,13 @@ function mintTicket(alloc: Contract<TierAllocation>, fan: string): void {
       redeemed: false,
     } as unknown as Ticket,
   });
+  notify(
+    fan,
+    "ticket_delivered",
+    "Your ticket is ready",
+    `${eventNameOf(a.eventId)} — ${a.tierId} #${serial} just landed in My Tickets.`,
+    ticketCid,
+  );
   const newSold = a.sold + 1;
   if (newSold >= a.size) {
     store.allocs = store.allocs.filter((x) => x.contractId !== alloc.contractId);
@@ -400,7 +470,9 @@ class MockLedger {
       case "Ticket_Offer": {
         const idx = store.tickets.findIndex((t) => t.contractId === cid);
         if (idx === -1) throw new Error("ticket not found");
-        const t = store.tickets[idx].payload as unknown as { redeemed: boolean; owner: string; maxResalePrice: string };
+        const t = store.tickets[idx].payload as unknown as {
+          redeemed: boolean; owner: string; maxResalePrice: string; eventId: string; tierId: string; serial: number;
+        };
         if (t.redeemed) throw new Error("redeemed tickets cannot be resold");
         const salePrice = Number(args.salePrice);
         if (salePrice > Number(t.maxResalePrice)) throw new Error("resale price exceeds the anti-scalping cap");
@@ -411,24 +483,40 @@ class MockLedger {
           contractId: offerCid,
           payload: { ticket: t, buyer: args.buyer, salePrice: salePrice.toFixed(10) } as unknown as ResaleOffer,
         });
+        notify(
+          args.buyer as string,
+          "resale_offer",
+          "Ticket offered to you",
+          `${firstName(t.owner)} wants to sell you ${eventNameOf(t.eventId)} — ${t.tierId} #${t.serial} for $${salePrice.toFixed(2)}.`,
+          offerCid,
+        );
         return [offerCid, []];
       }
       case "Ticket_OfferGift": {
         const idx = store.tickets.findIndex((t) => t.contractId === cid);
         if (idx === -1) throw new Error("ticket not found");
-        const t = store.tickets[idx].payload as unknown as { redeemed: boolean; owner: string };
+        const t = store.tickets[idx].payload as unknown as {
+          redeemed: boolean; owner: string; eventId: string; tierId: string; serial: number;
+        };
         if (t.redeemed) throw new Error("redeemed tickets cannot be gifted");
         if (args.recipient === t.owner) throw new Error("recipient must differ from the current owner");
         store.tickets.splice(idx, 1);
         const giftCid = nextId("GiftOffer");
         store.giftOffers.push({ contractId: giftCid, payload: { ticket: t, recipient: args.recipient } as unknown as GiftOffer });
+        notify(
+          args.recipient as string,
+          "gift_offer",
+          "You've been sent a ticket",
+          `${firstName(t.owner)} sent you ${eventNameOf(t.eventId)} — ${t.tierId} #${t.serial}, free.`,
+          giftCid,
+        );
         return [giftCid, []];
       }
       case "ResaleOffer_Accept": {
         const idx = store.resaleOffers.findIndex((o) => o.contractId === cid);
         if (idx === -1) throw new Error("offer not found");
         const offer = store.resaleOffers[idx].payload as unknown as {
-          ticket: { royaltyBps: number; artist: string; owner: string };
+          ticket: { royaltyBps: number; artist: string; owner: string; eventId: string; tierId: string; serial: number };
           salePrice: string;
           buyer: string;
         };
@@ -450,6 +538,13 @@ class MockLedger {
         }
         const newTicketCid = nextId("Ticket");
         store.tickets.push({ contractId: newTicketCid, payload: { ...offer.ticket, owner: offer.buyer } as unknown as Ticket });
+        notify(
+          offer.ticket.owner,
+          "resale_settled",
+          "Your ticket sold",
+          `${eventNameOf(offer.ticket.eventId)} — ${offer.ticket.tierId} #${offer.ticket.serial} sold for $${salePrice.toFixed(2)}; proceeds are in your balance.`,
+          newTicketCid,
+        );
         return [newTicketCid, []];
       }
       case "ResaleOffer_Reject":

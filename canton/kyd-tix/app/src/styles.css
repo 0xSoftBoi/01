@@ -273,6 +273,99 @@ header {
   font-weight: 700;
 }
 
+/* ---------------- notifications bell ---------------- */
+
+.bell-wrap {
+  position: relative;
+}
+
+.bell {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: border-color 0.15s;
+}
+
+.bell:hover {
+  border-color: var(--muted);
+}
+
+.bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  padding: 0 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.notif-panel {
+  position: absolute;
+  right: 0;
+  top: 44px;
+  width: 320px;
+  max-height: 380px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  animation: pop 0.12s ease-out;
+}
+
+.notif-row {
+  padding: 12px 14px;
+  border-left: 3px solid transparent;
+}
+
+.notif-row + .notif-row {
+  border-top: 1px solid var(--line);
+}
+
+.notif-row.unread {
+  border-left-color: var(--accent);
+}
+
+.notif-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notif-body {
+  margin: 2px 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.notif-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.notif-empty {
+  padding: 26px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 /* ---------------- layout ---------------- */
 
 .stack {
@@ -876,6 +969,19 @@ td {
 
   .header-right {
     gap: 8px;
+  }
+
+  /* The dropdown becomes a full-width sheet fixed under the sticky header. */
+  .notif-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 57px;
+    width: 100%;
+    max-height: 60vh;
+    border-left: none;
+    border-right: none;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   }
 
   .card {

@@ -1,9 +1,11 @@
 # Handoff
 
 Everything the next engineer needs to take this from demo to production,
-honestly labeled. Start here, then `README.md` for the architecture story and
-`DESIGN.md` for the decision record (why each choice, and the open questions
-for KYD).
+honestly labeled. Start here, then `README.md` for the architecture story,
+`PRODUCTION.md` for the production application design (system architecture,
+database schema, API spec, deployment, roadmap — the twelve-section document),
+and `DESIGN.md` for the decision record (why each choice, and the open
+questions for KYD).
 
 ```mermaid
 flowchart LR
@@ -32,7 +34,7 @@ Canton*, not just tests in-memory — see `privacy-proof/README.md` and
 
 ```
 make test        # Daml: 2 packages, 34 scenarios (functional/adversarial/CIP-56)
-make server-test # auth/catalog/payments server: 26 tests, no ledger required
+make server-test # auth/catalog/payments/indexer server: 58 tests, no ledger required
 make app         # web app: codegen + type-check + production build
 make demo        # local stack: sandbox + seed + JSON API + server + 3 triggers
                  # then: cd app && npm run dev  (web)  /  ios/KYDFan (Xcode)
@@ -53,7 +55,7 @@ every push touching this tree.
 | CIP-56 integration | `Cash` implements `Holding`; `Kyd.Registry` implements the standard `TransferFactory`/`AllocationFactory`/`Allocation`. Resale + transfers tested through these real factories. NOT yet run against live Canton Coin/USDCx package ids (swap the vendored DAR for the official releases). |
 | iOS app (`ios/KYDFan`) | Source-complete, no dependencies, same API contract as the verified web app — but **not compiled** (no macOS CI leg). Expect a first-build pass on a Mac. |
 | Validator ops (`validator/`) | Documentation + runbook with sourced commands. No node was stood up from this repo. |
-| Auth/catalog/payments server (`server/`) | **26 tests, no ledger required**: real RS256 token issuance and verification (including a genuine HTTP fetch of the JWKS endpoint), signing-key persistence across process restarts, idempotent Daml User provisioning, the login route's operator exclusion, HMAC signature accept/reject on the PSP webhook, the catalog proxy. **Plus `server/auth-proof/`** — a real, single-participant Canton configured with a `jwt-rs-256-jwks` auth-service: proves Canton's own ledger-api verifies these signatures, rejects forged/tampered/absent/unprovisioned tokens, AND — the thing an earlier run of this proof found missing — that a genuine fan login through `/auth/login` now authorizes a real ledger-api command end to end, closed by `server/src/userManagement.ts`'s Daml User provisioning. |
+| Auth/catalog/payments server (`server/`) | **58 tests, no ledger required**: real RS256 token issuance and verification (including a genuine HTTP fetch of the JWKS endpoint), signing-key persistence across process restarts, idempotent Daml User provisioning, the login route's operator exclusion, HMAC signature accept/reject on the PSP webhook, PSP delivery idempotency (replayed signed bodies mint once), the catalog proxy, SQLite migrations + the `KydDb` surface, the ACS indexer's baseline/transition/archival + notification derivation, notifications/analytics route auth + validation, `/healthz` + `/metrics`. Full HTTP surface in `server/openapi.yaml`; architecture in `PRODUCTION.md`. **Plus `server/auth-proof/`** — a real, single-participant Canton configured with a `jwt-rs-256-jwks` auth-service: proves Canton's own ledger-api verifies these signatures, rejects forged/tampered/absent/unprovisioned tokens, AND — the thing an earlier run of this proof found missing — that a genuine fan login through `/auth/login` now authorizes a real ledger-api command end to end, closed by `server/src/userManagement.ts`'s Daml User provisioning. |
 
 ## Production gaps, in priority order
 
@@ -112,7 +114,12 @@ splice-token-standard/ vendored CIP-56 interfaces (separate package, SCU rule)
 app/                  web product (React/TS, PWA-installable)
 app/src/demo/mock.ts  standalone Vercel deploy path (VITE_DEMO_MODE) — no
                        Canton behind it; app/README.md#standalone-demo-build-no-canton-behind-it
-server/               auth/catalog/payments — the custody boundary (server/README.md)
+server/               auth/catalog/payments/notifications/analytics — the
+                       custody boundary + derived read model (server/README.md,
+                       server/openapi.yaml, server/Dockerfile)
+deploy/               docker compose for the app-server tier (deploy/README.md)
+PRODUCTION.md         the production application design: architecture, DB
+                       schema, API spec, user flows, deployment, roadmap
 ios/KYDFan/           native fan app (SwiftUI, XcodeGen)
 integration/          JSON API config, local stack script, headless client
 validator/            network strategy (README) + operational runbook

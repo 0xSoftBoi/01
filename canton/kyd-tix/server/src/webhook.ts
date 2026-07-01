@@ -1,12 +1,12 @@
 import { Router, raw } from "express";
 import { asyncRoute } from "./asyncRoute.js";
-import { processPspWebhook } from "./psp.js";
+import { processPspWebhook, type DeliveryStore } from "./psp.js";
 import type { MintableLedger } from "./ledgerSession.js";
 
 // Mounted BEFORE the global express.json() body parser (see index.ts): the
 // signature is computed over the exact bytes the PSP sent, so this route
 // needs the raw body, not a re-serialized JSON object.
-export function webhookRouter(session: MintableLedger, operatorParty: string) {
+export function webhookRouter(session: MintableLedger, operatorParty: string, deliveries?: DeliveryStore) {
   const router = Router();
   router.post(
     "/webhooks/psp",
@@ -17,6 +17,7 @@ export function webhookRouter(session: MintableLedger, operatorParty: string) {
         req.header("x-webhook-signature"),
         session,
         operatorParty,
+        deliveries,
       );
       res.status(result.status).json(result.body);
     }),

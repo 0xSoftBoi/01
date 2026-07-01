@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# kyd-tix — app-server tier ONLY.
+#
+# Topology, honestly: the Canton participant, the HTTP JSON API (port 7575)
+# and the Daml triggers run OUTSIDE this compose file — locally via `make demo`
+# at the repo root of kyd-tix, or against a real participant in production
+# (see ../validator/README.md). This file builds and runs just the Node
+# app server (auth issuer + catalog + PSP webhook + payments) and points it at
+# that externally-running ledger through JSON_API_URL.
+#
+# Defaults assume the `make demo` stack is running on the Docker HOST:
+# host.docker.internal is mapped to the host gateway (extra_hosts below) so it
+# also resolves on Linux, where Docker does not provide it automatically.
+#
+# The server needs the demo party IDs produced by the demo setup; they are
+# read from DEMO_PARTIES_PATH, so ../app/public/demo-parties.json is mounted
+# read-only into the container. Run `make demo` first or the container will
+# exit at startup because that file is missing/stale.
+# ---------------------------------------------------------------------------
+services:
+  server:
+    build:
+      context: ../server
+    restart: unless-stopped
+    ports:
+      - "4001:4001"
+    environment:
+      PORT: "4001"
+      # Where the HTTP JSON API of the (external) participant lives.
+      JSON_API_URL: ${JSON_API_URL:-http://host.docker.internal:7575}
+      # SQLite database file, on the named volume below.
+      DB_PATH: /data/kyd.db
+      # Shared secret for PSP webhook signature verification. Left empty, the
+      # server falls back to a well-known demo secret and logs a loud warning —
+      # set it in the shell or a .env file for anything beyond a local demo.
+      PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-}
+      # Poll interval for the ledger indexer (ms).
+      INDEXER_INTERVAL_MS: ${INDEXER_INTERVAL_MS:-5000}
+      DEMO_PARTIES_PATH: /app/demo-parties.json
+    extra_hosts:
+      # Make host.docker.internal work on Linux (Docker Desktop on macOS or
+      # Windows provides it out of the box; plain Linux engines do not).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - kyd-data:/data
+      - ../app/public/demo-parties.json:/app/demo-parties.json:ro
+
+volumes:
+  kyd-data:

@@ -98,8 +98,10 @@ function ledgerFromToken(token: string): Ledger {
 // Resolves the lazily-imported demo module once and holds it in state so
 // DEMO_MODE hooks (which need to call another hook from inside mock.ts) can
 // wait for it to land instead of awaiting synchronously. Only ever invoked
-// under DEMO_MODE, where `demoModule` is always a real Promise.
-function useDemoModule(): DemoModule | null {
+// under DEMO_MODE, where `demoModule` is always a real Promise. Exported so
+// other DEMO_MODE hook branches (src/notifications.ts) share this exact
+// resolution path instead of growing a second lazy-import of mock.ts.
+export function useDemoModule(): DemoModule | null {
   const [mod, setMod] = useState<DemoModule | null>(null);
   useEffect(() => {
     let live = true;
