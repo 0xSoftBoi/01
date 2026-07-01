@@ -9,8 +9,8 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **34 scenarios** pass on Daml SDK
-**2.10.4** — functional (incl. gifting and venue refunds), a 13-suite
+It builds (LF 1.17, SCU-ready) and all **35 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), a 14-suite
 adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
 and 4 suites driving DvP settlement, free-of-payment transfer and lock-in-place
 custody through the **real CIP-56 token-standard
@@ -34,7 +34,7 @@ automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-make test     # both Daml packages + all 34 scenarios
+make test     # both Daml packages + all 35 scenarios
 make app      # typed bindings + web app production build
 make demo     # sandbox + demo seed + JSON API + triggers
 cd app && npm run dev           # the product UI (PWA-installable)
@@ -54,7 +54,11 @@ demand-curve inventory control, the TIX register and pending escrows; the
 artist watches royalties accrue from every resale. Architecture notes — why
 the catalog reads via the operator while every action signs as the fan, and
 why "no wallets" is the hosted-party model, not a hack — in
-[app/README.md](app/README.md). The operator credential itself lives
+[app/README.md](app/README.md). For Canton-native users there is also an
+optional **Connect a Canton wallet** flow (header chip → provider picker →
+disclosure handshake → linked party + holdings): a self-custody path that reads
+balances straight from the CIP-56 `Holding` interface — the same one Canton
+Coin and USDCx expose — sitting alongside, not replacing, the hosted balance. The operator credential itself lives
 server-side only ([server/README.md](server/README.md)): real RS256-signed
 login tokens, a proxied catalog read, and a mint path gated by webhook
 signature verification — the browser never holds operator authority.
@@ -308,7 +312,11 @@ operator, venue and that lender — so the book never leaks *who* committed or
 *how much*. Eligibility moves from an invite list to **on-ledger credentials**:
 `Listing_Commit` looks up the committer's `Lender` membership (`Kyd.Roles`) as a
 KYC gate. Both paths converge on the same `SyndicatedLoan`, so settlement, the
-waterfall and the tranche market are identical downstream.
+waterfall and the tranche market are identical downstream. Settling a private
+commitment to the venue is **operator-mediated** — parity with the invited
+path, where settlement is only reachable inside `Offering_Activate` — so the
+venue can never drain a lender's committed funds without the loan being booked
+(audit KYD-13).
 
 ### TIX worked example (from `testSyndicatedFinancing`)
 
@@ -398,13 +406,14 @@ references, third-party-funded legs and missing royalty legs all rejected;
 `TransferFactory`; `testCip56LockReservation` — an allocated holding is locked
 in place (still owned, unspendable) until it settles or is withdrawn.
 
-**Adversarial suite** (`Kyd.SecurityTest`, every scenario an attack that must
-fail): forged cash issuance and theft, overdrafts, authority abuse on
+**Adversarial suite** (`Kyd.SecurityTest`, 14 suites, every scenario an attack
+that must fail): forged cash issuance and theft, overdrafts, authority abuse on
 issuance/repricing/fills, unilateral escrow refunds, an operator freezing or
 redirecting locked funds to itself (audit KYD-11), register tampering by the
 operator (audit KYD-01), cross-facility receipt injection, resale
-double-listing and impersonation, membership forgery. Findings and trust model
-in [AUDIT.md](AUDIT.md).
+double-listing and impersonation, membership forgery, and an open-round venue
+settling a lender's committed funds to itself with no loan booked (audit
+KYD-13). Findings and trust model in [AUDIT.md](AUDIT.md).
 
 ---
 

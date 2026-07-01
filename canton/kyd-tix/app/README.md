@@ -69,12 +69,21 @@ after one GA sale match exactly between the two modes).
 
 ## UX-architecture notes (the part that matters)
 
-- **No wallets anywhere.** Fan parties are hosted on the operator's validator;
-  "login" is an identity pick here — `POST /auth/login` against `../server`
-  (`useSession` in `api.ts`) — that in production becomes a phone/email/OIDC
-  login in front of the same real, RS256-signed token issuance (see
-  `server/README.md`). Money is a balance; the note-splitting plumbing
-  (`exactNote`) lives in `api.ts` and never reaches a component.
+- **No wallet required (but one can connect).** By default, fan parties are
+  hosted on the operator's validator; "login" is an identity pick here —
+  `POST /auth/login` against `../server` (`useSession` in `api.ts`) — that in
+  production becomes a phone/email/OIDC login in front of the same real,
+  RS256-signed token issuance (see `server/README.md`). Money is a balance; the
+  note-splitting plumbing (`exactNote`) lives in `api.ts` and never reaches a
+  component. For Canton-native users, the header's **Connect wallet** chip opens
+  a self-custody path (`wallet.ts`, `components/WalletConnect.tsx`): a
+  party-disclosure handshake — not a seed import — after which balances are read
+  through the CIP-56 `Holding` interface `Kyd.Cash` implements, the same one
+  Loop / Canton Coin wallets read via an `InterfaceFilter`. It's purely
+  additive: linking a wallet surfaces self-custody holdings, it doesn't reroute
+  the demo's purchase path. In `VITE_DEMO_MODE` the handshake is simulated
+  per-provider; against a live participant it reports the bridge unavailable
+  rather than hanging (no browser wallet connector is wired in this build yet).
 - **Catalog vs. authority.** Fans are not stakeholders of `Event` /
   `TierAllocation` (privacy by default), so the catalog is read through the
   operator — exactly the backend-API role KYD's web2 app plays today. That

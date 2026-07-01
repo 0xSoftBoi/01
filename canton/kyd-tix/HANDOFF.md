@@ -13,7 +13,7 @@ flowchart LR
   IOS["ios/KYDFan<br/>SwiftUI source"]
   SERVER["server/<br/>auth + JWKS + catalog proxy + PSP webhook"]
   JSONAPI["JSON API"]
-  DAML["daml/<br/>Kyd.* modules, 34 scenarios"]
+  DAML["daml/<br/>Kyd.* modules, 35 scenarios"]
   TRIGGERS["Kyd.Triggers<br/>autoFill / sweep / accrue"]
   PROOFS["privacy-proof/ + server/auth-proof/<br/>real multi-participant Canton"]
 
@@ -33,7 +33,7 @@ Canton*, not just tests in-memory — see `privacy-proof/README.md` and
 ## One-command map
 
 ```
-make test        # Daml: 2 packages, 34 scenarios (functional/adversarial/CIP-56)
+make test        # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
 make server-test # auth/catalog/payments/indexer server: 58 tests, no ledger required
 make app         # web app: codegen + type-check + production build
 make demo        # local stack: sandbox + seed + JSON API + server + 3 triggers
@@ -47,7 +47,7 @@ every push touching this tree.
 
 | Layer | Verification |
 | --- | --- |
-| Daml model (`daml/`) | 34 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
+| Daml model (`daml/`) | 35 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
 | Contention (`integration/client/src/bench.ts`) | **Measured** on a local sandbox: sharding gives 8.7× (16 concurrent) and 13.7× (24 concurrent) throughput, contention retries 100s → 0, scaling with concurrency. `npm run bench -- N`. Not in CI (needs a running ledger). |
 | Multi-participant on real Canton (`privacy-proof/`) | **Proven on a real 2-participant + 1-domain Canton network** (`./run.sh`): the `Cash` privacy primitive AND the full app (sharded issuance, paid sale, cross-participant gift) — a competing venue's node holds none of another venue's events/tickets. Race-free, deterministic. Not in CI (needs a running Canton); run on demand. |
 | Web app (`app/`) | Type-check + production build in CI. The full runtime loop (JWT → catalog → split → order → trigger fill → pass; financing receipt escrowed) was driven over HTTP against the running stack during development. |
@@ -95,6 +95,12 @@ every push touching this tree.
 6. **iOS**: first Xcode build, then swap `LedgerClient.swift`'s unsigned
    token for a real `/auth/login` call against `server/`, then push
    notifications for offers.
+7. **Canton wallet connect — UI complete, bridge pending.** The self-custody
+   flow (`app/src/wallet.ts`, `components/WalletConnect.tsx`) is fully built and
+   demo-simulated per provider; production needs a real browser wallet
+   connector (Loop / Canton Coin wallet handshake) behind `connectWallet`,
+   returning the disclosed party + a read grant so holdings are discovered live
+   through the CIP-56 `Holding` interface instead of the seeded demo set.
 
 ## Key design decisions (don't re-litigate without reading these)
 
@@ -123,5 +129,5 @@ PRODUCTION.md         the production application design: architecture, DB
 ios/KYDFan/           native fan app (SwiftUI, XcodeGen)
 integration/          JSON API config, local stack script, headless client
 validator/            network strategy (README) + operational runbook
-AUDIT.md              trust model, findings KYD-01..12, attack coverage
+AUDIT.md              trust model, findings KYD-01..14, attack coverage
 ```

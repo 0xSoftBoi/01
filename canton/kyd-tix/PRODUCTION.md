@@ -1,7 +1,7 @@
 # Production architecture
 
 How kyd-tix runs as a product, not just as a Daml model. The audited smart
-contracts (`daml/`, [AUDIT.md](AUDIT.md), findings KYD-01..12, 34 CI
+contracts (`daml/`, [AUDIT.md](AUDIT.md), findings KYD-01..14, 35 CI
 scenarios) are the **trusted core** — they decide who owns what and where
 money moves, and nothing in this document weakens that. Everything around
 them is conventional product infrastructure: a backend service tier, a
@@ -285,7 +285,8 @@ overlays. Each maps to specific product flows:
 | **Door** (venue) | `DoorView.tsx` | per-show manifest, check-in (`Ticket_CheckIn` — consuming, so double-scan is impossible; doors-window bounded per KYD-10) |
 | **Venue** (dashboard) | `VenueView.tsx` | tier inventory + next curve price, open-more-shards, the TIX register (per-lender outstanding), pending revenue-share escrows the venue cannot touch |
 | **Artist** (royalties) | `ArtistView.tsx` | royalty balance accruing from every capped resale, per-show fan visibility |
-| **Wallet sheet** | `WalletSheet.tsx` | balance, top-up via `POST /payments/topup` (the verified-mint path) |
+| **Wallet sheet** | `WalletSheet.tsx` | hosted balance, top-up via `POST /payments/topup` (the verified-mint path) |
+| **Connect wallet** | `WalletConnect.tsx` + `wallet.ts` | optional self-custody path: provider picker → party-disclosure handshake → linked party + CIP-56 `Holding` balances, with disconnect; demo-simulated, real bridge pending (§10) |
 | **Notifications panel** | header overlay | the party's inbox from `GET /notifications`, live-updated over the SSE stream, mark-read |
 
 Same surfaces, two modes: against the real stack, or under
@@ -378,7 +379,8 @@ The translation table, for anyone arriving from EVM:
 | EVM term | Canton equivalent here |
 | --- | --- |
 | ABI + generated bindings | `daml codegen js` typed bindings from the DAR |
-| Wallet / EOA | A **party** (hosted on the operator's participant); balances are CIP-56 `Holding` contracts, discoverable by any standard wallet via an `InterfaceFilter` |
+| Wallet / EOA | A **party** — hosted on the operator's participant (custodial default), or a self-custody wallet linked via the **Connect wallet** flow (party-disclosure handshake). Either way balances are CIP-56 `Holding` contracts, discoverable by any standard wallet via an `InterfaceFilter` |
+| Connect wallet (wagmi/RainbowKit) | Party-disclosure handshake: the wallet shares which party it acts as + a read grant; the dapp reads holdings off the `Holding` interface. No keys leave the wallet (`app/src/wallet.ts`) |
 | Sending a tx | Command submission (create/exercise) via the JSON API, signed by the party the token names |
 | Tx receipt + logs | Command completion + the resulting ACS delta (new/archived contracts) |
 | Event indexing (`eth_getLogs`) | Reading the ACS / transaction stream — here, the indexer's ACS poll-and-diff |
@@ -575,9 +577,9 @@ The pyramid as it actually exists — see HANDOFF.md's "What is verified, and
 how" table for the authoritative claim-by-claim status; this section is the
 shape, not a duplicate.
 
-1. **Daml scenarios (base of the pyramid, in CI)** — 34 scenarios across
+1. **Daml scenarios (base of the pyramid, in CI)** — 35 scenarios across
    `Kyd.Test` (functional, incl. gifting and refunds), `Kyd.SecurityTest`
-   (13 adversarial suites — every scenario an attack that must fail) and
+   (14 adversarial suites — every scenario an attack that must fail) and
    `Kyd.TokenTest` (CIP-56 DvP, transfer, lock-in-place through the real
    factories). Warning-free, on every push (`make test`).
 2. **Server vitest (in CI, no ledger required)** — `make server-test`: the
