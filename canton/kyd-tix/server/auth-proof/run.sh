@@ -11,15 +11,11 @@
 # reuse a running integration/run-local.sh stack, which also uses :4001 —
 # don't run both at once).
 #
-# Prereq: `daml` on PATH (https://get.daml.com), Node on PATH. ~30-60s.
+# Prereq: `daml` on PATH (https://get.daml.com), Node on PATH, `fuser`
+# (psmisc; used to free :4001 between server restarts). ~30-60s.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# A leftover server from a prior aborted run binding :4001 would make the
-# "wait for /health" check below pass against the WRONG process — one
-# signing with a stale key that doesn't match this run's admin token
-# (found live).
-pkill -9 -f "tsx src/index.ts" 2>/dev/null || true
 pkill -9 -f "canton.jar.*daemon -c canton.conf" 2>/dev/null || true
 
 CANTON_JAR="$HOME/.daml/sdk/2.10.4/canton/canton.jar"
@@ -31,7 +27,19 @@ mkdir -p "$WORK"
 # `daml sandbox`; found live, see tokens.ts's LEDGER_ID comment).
 export LEDGER_ID=p1
 
+# Also does the kill-any-stale-instance step itself (called both for the
+# first boot and the step-6 restart below) — a leftover server from a prior
+# run, or the previous instance still shutting down, binding :4001 would
+# make the "wait for /health" check pass against the WRONG process, one
+# signing with a stale key that doesn't match this run's admin token
+# (found live). Kills by PORT (fuser), not by process-name pattern (pkill
+# -f): `npx tsx ...` runs through npm/sh wrapper layers that exec() into a
+# final node+tsx-loader command line not guaranteed to contain the literal
+# "tsx src/index.ts" substring — pattern matching missed it and left the
+# old process holding the port (found live).
 start_server() {
+  fuser -k 4001/tcp 2>/dev/null || true
+  sleep 1   # let the OS release :4001 before the next process tries to bind it
   ( cd .. && \
     PORT=4001 JSON_API_URL=http://localhost:7576 LEDGER_ID=p1 \
     DEMO_PARTIES_PATH="$WORK/demo-parties.json" SIGNING_KEY_PATH="$WORK/signing-key.pem" \
@@ -49,7 +57,7 @@ echo "2/7  starting a single Canton participant requiring jwt-rs-256-jwks auth o
 java -Xmx2g -jar "$CANTON_JAR" daemon -c canton.conf --bootstrap connect.canton \
   > "$WORK/canton.log" 2>&1 &
 CANTON_PID=$!
-trap 'kill $CANTON_PID ${JSONAPI_PID:-} 2>/dev/null; pkill -f "tsx src/index.ts" 2>/dev/null; true' EXIT
+trap 'kill $CANTON_PID ${JSONAPI_PID:-} 2>/dev/null; fuser -k 4001/tcp 2>/dev/null; true' EXIT
 until grep -q CANTON_READY "$WORK/canton.log" 2>/dev/null; do sleep 3; done
 grep CANTON_READY "$WORK/canton.log"
 
@@ -74,8 +82,6 @@ cat > "$WORK/demo-parties.json" <<EOF
 EOF
 
 echo "6/7  restarting the auth server so /auth/login's loginable map picks up the real Alice party"
-pkill -f "tsx src/index.ts" 2>/dev/null || true
-sleep 1
 start_server
 
 echo "7/7  running the proof"

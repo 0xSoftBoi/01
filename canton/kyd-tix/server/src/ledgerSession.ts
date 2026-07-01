@@ -6,6 +6,7 @@ import { Ledger as DamlLedger } from "@daml/ledger";
 import type { Template, ContractId } from "@daml/types";
 import { issueLedgerToken } from "./tokens.js";
 import { ensureUserForParty, userIdFor } from "./userManagement.js";
+import { normalizeBaseUrl } from "./httpUtil.js";
 
 export interface LedgerContract<T = unknown> {
   contractId: string;
@@ -35,47 +36,40 @@ export interface MintableLedger {
 // custody boundary rather than a relabeled client-side mint.
 export class LedgerSession implements QueryableLedger, MintableLedger {
   private readonly userId: string;
-  private cachedToken: Promise<string> | null = null;
-  private tokenIssuedAtSeconds = 0;
+  private readonly httpBaseUrl: string;
   private readonly ttlSeconds = 10 * 60;
-  private provisioned: Promise<void> | null = null;
+  private cachedLedger: Promise<DamlLedger> | null = null;
+  private cachedIssuedAtSeconds = 0;
 
   constructor(
     private readonly party: string,
-    private readonly jsonApiBaseUrl: string,
+    jsonApiBaseUrl: string,
     userId = userIdFor("operator"),
   ) {
     this.userId = userId;
+    this.httpBaseUrl = normalizeBaseUrl(jsonApiBaseUrl);
   }
 
-  // Idempotent, but only worth doing once per process — see
-  // userManagement.ts for why a real Daml User (not just this token's own
-  // actAs claim) has to exist before a real signature-verifying participant
-  // will authorize anything under this session.
-  private ensureProvisioned(): Promise<void> {
-    if (!this.provisioned) {
-      this.provisioned = ensureUserForParty(this.jsonApiBaseUrl, this.userId, this.party);
-    }
-    return this.provisioned;
-  }
-
-  private async token(): Promise<string> {
+  // Token AND client travel together: rebuilding the Ledger client on every
+  // call was wasted work once the token underneath it hadn't actually
+  // changed. Daml User provisioning (userManagement.ts) is idempotent and
+  // self-caches per process, so it's cheap to await unconditionally here —
+  // no separate "have I provisioned yet" flag to keep in sync.
+  private ledger(): Promise<DamlLedger> {
     const nowSeconds = Date.now() / 1000;
-    const stillFresh = this.cachedToken && nowSeconds - this.tokenIssuedAtSeconds < this.ttlSeconds - 30;
-    if (stillFresh) return this.cachedToken as Promise<string>;
-    await this.ensureProvisioned();
-    this.tokenIssuedAtSeconds = nowSeconds;
-    this.cachedToken = issueLedgerToken(this.userId, {
-      actAs: [this.party],
-      readAs: [this.party],
-      expiresInSeconds: this.ttlSeconds,
-    });
-    return this.cachedToken;
-  }
-
-  private async ledger(): Promise<DamlLedger> {
-    const httpBaseUrl = this.jsonApiBaseUrl.endsWith("/") ? this.jsonApiBaseUrl : `${this.jsonApiBaseUrl}/`;
-    return new DamlLedger({ token: await this.token(), httpBaseUrl });
+    const stillFresh = this.cachedLedger && nowSeconds - this.cachedIssuedAtSeconds < this.ttlSeconds - 30;
+    if (stillFresh) return this.cachedLedger as Promise<DamlLedger>;
+    this.cachedIssuedAtSeconds = nowSeconds;
+    this.cachedLedger = (async () => {
+      await ensureUserForParty(this.httpBaseUrl, this.userId, this.party);
+      const token = await issueLedgerToken(this.userId, {
+        actAs: [this.party],
+        readAs: [this.party],
+        expiresInSeconds: this.ttlSeconds,
+      });
+      return new DamlLedger({ token, httpBaseUrl: this.httpBaseUrl });
+    })();
+    return this.cachedLedger;
   }
 
   async query<T extends object, K, I extends string>(

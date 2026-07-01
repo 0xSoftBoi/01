@@ -8,12 +8,10 @@
 // just admin-scoped operations.
 import { readFile } from "node:fs/promises";
 import { SignJWT, generateKeyPair } from "jose";
-import { keySet } from "../src/keys.js";
+import { ISSUER, AUDIENCE, issueAdminToken } from "../src/tokens.js";
 
 const AUTH_BASE = "http://localhost:4001";
 const JSON_API_BASE = "http://localhost:7576";
-const ISSUER = "https://auth.kyd-tix.example/";
-const AUDIENCE = "https://kyd-tix-ledger/";
 
 async function allocateParty(token: string, hint: string): Promise<Response> {
   return fetch(`${JSON_API_BASE}/v1/parties/allocate`, {
@@ -67,17 +65,7 @@ async function main() {
   assertRejected(noTokenRes.status, "unauthenticated request");
 
   console.log("5/6  a validly signed token naming a `sub` with no provisioned rights is REJECTED");
-  const { privateKey, kid } = await keySet();
-  const unknownUser = await new SignJWT({
-    "https://daml.com/ledger-api": { ledgerId: "sandbox", applicationId: "kyd-tix-app", admin: true },
-  })
-    .setProtectedHeader({ alg: "RS256", kid })
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
-    .setSubject("not-a-real-user")
-    .setIssuedAt(now)
-    .setExpirationTime(now + 300)
-    .sign(privateKey);
+  const unknownUser = await issueAdminToken(300, "not-a-real-user");
   assertRejected((await allocateParty(unknownUser, "ShouldNotExist4")).status, "unprovisioned-user token");
 
   console.log("6/6  a REAL fan login (server/src/identity.ts + userManagement.ts) works end to end");
