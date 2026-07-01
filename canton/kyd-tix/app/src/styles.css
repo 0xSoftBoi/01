@@ -11,7 +11,8 @@
   --accent-2: #3c23f2;
   --ok: #0a8f4a;
   --radius: 16px;
-  --shadow: 0 8px 28px rgb(0 0 0 / 0.1);
+  --radius-sm: 8px;
+  --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -1px rgb(0 0 0 / 0.06);
   --mono: "IBM Plex Mono", "SF Mono", Monaco, Consolas, monospace;
 }
 
@@ -183,7 +184,7 @@ header {
   background: var(--text);
   color: var(--bg);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 12px 18px;
   font-family: inherit;
   font-size: 15px;
@@ -438,7 +439,7 @@ button.buy,
   background: var(--text);
   color: var(--bg);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 9px 20px;
   font-size: 14px;
   font-weight: 800;
@@ -459,7 +460,7 @@ button.ghost {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 8px 14px;
   font-size: 13px;
   font-weight: 600;
@@ -493,7 +494,7 @@ button.ghost:hover {
   background: var(--paper);
   border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 14px 32px rgb(0 0 0 / 0.14);
+  box-shadow: 0 6px 12px -2px rgb(0 0 0 / 0.12), 0 3px 6px -2px rgb(0 0 0 / 0.08);
   animation: pop 0.25s ease-out;
 }
 
@@ -545,14 +546,18 @@ button.ghost:hover {
 
 .pass-field-label {
   margin: 0;
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
 
 .pass-field-value {
   margin: 1px 0 0;
-  font-size: 15px;
+  font-size: 17px;
+  font-weight: 600;
   color: #2a2a2a;
 }
 
@@ -842,6 +847,49 @@ td {
 
 .skeleton.cover {
   height: 230px;
+}
+
+/* ---------------- responsive ---------------- */
+
+@media (max-width: 480px) {
+  .shell {
+    padding: 12px 12px 64px;
+  }
+
+  header {
+    gap: 10px;
+    padding: 10px 2px;
+  }
+
+  .logo-word {
+    font-size: 16px;
+  }
+
+  .tabs {
+    gap: 0;
+  }
+
+  .tab {
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .pass-body {
+    padding: 4px 14px 14px;
+  }
+
+  .passes {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
+  }
 }
 
 @keyframes shimmer {

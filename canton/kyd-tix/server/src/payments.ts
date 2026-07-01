@@ -29,7 +29,7 @@ export function paymentsRouter(session: MintableLedger, operatorParty: string) {
       }
 
       const amount = Number(req.body?.amount);
-      if (!(amount > 0)) {
+      if (!Number.isFinite(amount) || !(amount > 0)) {
         res.status(400).json({ error: "amount must be positive" });
         return;
       }

@@ -9,8 +9,8 @@ things KYD actually runs today:
 2. **TIX** — the DeFi financing layer where a venue raises upfront capital
    against future ticket revenue and a lender is repaid as sales settle.
 
-It builds (LF 1.17, SCU-ready) and all **35 scenarios** pass on Daml SDK
-**2.10.4** — functional (incl. gifting and venue refunds), a 12-suite
+It builds (LF 1.17, SCU-ready) and all **34 scenarios** pass on Daml SDK
+**2.10.4** — functional (incl. gifting and venue refunds), a 13-suite
 adversarial security harness ([`Kyd.SecurityTest`](daml/Kyd/SecurityTest.daml)),
 and 4 suites driving DvP settlement, free-of-payment transfer and lock-in-place
 custody through the **real CIP-56 token-standard
@@ -30,7 +30,7 @@ automation (Daml Triggers) and the HTTP/JSON + TypeScript bridge for the web app
 live in [`integration/`](integration/).
 
 ```
-make test     # both Daml packages + all 35 scenarios
+make test     # both Daml packages + all 34 scenarios
 make app      # typed bindings + web app production build
 make demo     # sandbox + demo seed + JSON API + triggers
 cd app && npm run dev           # the product UI (PWA-installable)
@@ -268,7 +268,7 @@ dotted arrows are create-only (never contend); the loan is touched once per
 | Global per-sale demand curve | Needs a global counter = a synchronization bottleneck (the docs' anti-pattern) | **Step curve over allocations**: each successive shard prices at `base x (1 + allocated x demandBps/10⁴)` — same economics, zero shared state between sales |
 
 **Measured, not just argued.** A concurrent-issuance benchmark
-([`integration/client/src/bench.ts`](integration/client/README.md), one
+([`integration/client/src/bench.ts`](integration/client/src/bench.ts), one
 command) shows sharding deliver **8.7× at 16 concurrent issues and 13.7× at 24**
 on a single-node sandbox, with per-shard contention retries dropping from 100s
 to **zero** — and the speedup grows with concurrency, exactly as the model
@@ -377,6 +377,13 @@ checked-in ticket can't be resold (`testRedeemedCannotResell`).
     sweep on the loan; over-collection retires the loan and refunds the excess
 14. `testReceiptRefund` — with no facility owed, operator+venue jointly refund
     an escrowed share to the venue
+15. `testGiftFlow` — a gifted ticket is locked-by-archiving (can't also be
+    listed for sale) until the recipient accepts or declines
+16. `testRefund` — the venue makes the fan whole at exactly the price paid;
+    the ticket is withdrawn atomically with the refund
+17. `testCommitmentExpiryReclaim` — a lender can always reclaim its committed
+    funds once the offering's due date passes, even if the venue never
+    activates or cancels — lock-in-place can't freeze funds indefinitely
 
 **Token-standard suite** (`Kyd.TokenTest`, driven through the real
 `Kyd.Registry` factories): `testCip56DvPResale` — full DvP via the

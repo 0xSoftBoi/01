@@ -17,12 +17,27 @@ import type { ContractId } from "@daml/types";
 import { Cash } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Cash";
 import { Event, PurchaseOrder, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { useQuery, type QueryResult } from "./ledgerQuery";
-import * as demo from "./demo/mock";
 
 export { useQuery };
 export type { QueryResult };
 
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+
+// Lazily/dynamically imported so Vite can code-split the entire demo
+// simulation (and its seed data / party names) out of the real-backend
+// production bundle. This is a Promise, only ever created (and therefore
+// only ever evaluated/fetched) when DEMO_MODE is true — in real mode it's
+// `null` and harmless to reference. Do NOT change this to a static
+// `import * as demo` at module scope: mock.ts runs top-level side effects
+// (buildSeed(), new MockLedger()) as soon as it's evaluated, which must
+// never happen in the real-backend bundle.
+type DemoModule = typeof import("./demo/mock");
+const demoModule: Promise<DemoModule> | null = DEMO_MODE ? import("./demo/mock") : null;
+
+function loadDemo(): Promise<DemoModule> {
+  if (!demoModule) throw new Error("demo module requested outside DEMO_MODE");
+  return demoModule;
+}
 
 // ---------------------------------------------------------------------------
 // Demo identities
@@ -47,7 +62,7 @@ export const ROLES: { key: RoleKey; label: string; short: string; kind: "fan" | 
 ];
 
 export async function loadDemoParties(): Promise<DemoParties> {
-  if (DEMO_MODE) return demo.loadDemoParties();
+  if (DEMO_MODE) return (await loadDemo()).loadDemoParties();
   const res = await fetch("/demo-parties.json");
   if (!res.ok) throw new Error("stack-not-running");
   return (await res.json()) as DemoParties;
@@ -80,12 +95,40 @@ function ledgerFromToken(token: string): Ledger {
   return new Ledger({ token, httpBaseUrl: `${window.location.origin}/` });
 }
 
+// Resolves the lazily-imported demo module once and holds it in state so
+// DEMO_MODE hooks (which need to call another hook from inside mock.ts) can
+// wait for it to land instead of awaiting synchronously. Only ever invoked
+// under DEMO_MODE, where `demoModule` is always a real Promise.
+function useDemoModule(): DemoModule | null {
+  const [mod, setMod] = useState<DemoModule | null>(null);
+  useEffect(() => {
+    let live = true;
+    loadDemo().then((m) => {
+      if (live) setMod(m);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return mod;
+}
+
 // Re-logs in whenever the selected role changes (switching identity in the
 // demo == a fresh login). Returns null while the exchange is in flight.
 export function useSession(partyKey: RoleKey | null): { session: Session | null; ledger: Ledger | null } {
   // eslint-disable-next-line react-hooks/rules-of-hooks -- DEMO_MODE is a
-  // build-time constant (import.meta.env), never toggles across renders.
-  if (DEMO_MODE) return demo.useSession(partyKey);
+  // build-time constant (import.meta.env), never toggles across renders, so
+  // this branch is stable for the lifetime of every component instance.
+  if (DEMO_MODE) {
+    // useDemoModule is the ONLY hook called in this branch — every render,
+    // unconditionally. mod.partyForRole/mod.mockLedger below are plain
+    // values/functions, not hooks, so gating on `mod`'s async-resolved
+    // truthiness here is safe (only a *hook* call may never be conditional).
+    const mod = useDemoModule();
+    if (!mod || !partyKey) return { session: null, ledger: null };
+    const party = mod.partyForRole(partyKey);
+    return { session: { token: party, party }, ledger: mod.mockLedger };
+  }
   const [session, setSession] = useState<Session | null>(null);
   useEffect(() => {
     if (!partyKey) {
@@ -123,8 +166,18 @@ interface CatalogResponse {
 }
 
 export function useCatalog(): CatalogResult {
-  // eslint-disable-next-line react-hooks/rules-of-hooks -- see useSession above
-  if (DEMO_MODE) return demo.useCatalog();
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- see useSession
+  // above. useDemoModule + the two useQuery calls are the ONLY hooks in this
+  // branch, always called every render regardless of whether `mod` has
+  // resolved yet — useQuery itself tolerates a null ledger (see
+  // ledgerQuery.ts) and just stays in the loading state until it's ready.
+  if (DEMO_MODE) {
+    const mod = useDemoModule();
+    const ledger = mod ? mod.mockLedger : null;
+    const events = useQuery(ledger, Event);
+    const allocs = useQuery(ledger, TierAllocation);
+    return { events, allocs };
+  }
   const [events, setEvents] = useState<QueryResult<Event>["contracts"]>([]);
   const [allocs, setAllocs] = useState<QueryResult<TierAllocation>["contracts"]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,7 +242,7 @@ export function usePendingOrders(ledger: Ledger, fan: string) {
 // ever happens inside processPspWebhook after a real HMAC signature check
 // (server/src/psp.ts). No operator credential is reachable from here.
 export async function topUp(fanToken: string, amount: number): Promise<void> {
-  if (DEMO_MODE) return demo.topUp(fanToken, amount);
+  if (DEMO_MODE) return (await loadDemo()).topUp(fanToken, amount);
   const res = await fetch("/payments/topup", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${fanToken}` },

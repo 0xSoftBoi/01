@@ -271,6 +271,16 @@ template PurchaseOrder
         assertMsg "allocation does not match the order"
           (alloc.operator == operator && alloc.venue == venue
             && alloc.eventId == eventId && alloc.tierId == tierId)
+        -- The fan's own signatory authority on this contract is what makes
+        -- the Cash_Transfer below authorized at all (Cash_Transfer's
+        -- controller is the note's owner, and PurchaseOrder's signatory
+        -- authority — the fan's — flows into this choice body). Without this
+        -- check, a fan could name a cashCid they don't own (e.g. cash owned
+        -- by the operator, whose authority is trivially present here as the
+        -- exercising controller) and the automated fill would spend someone
+        -- else's money to "pay" for their ticket.
+        cash <- fetch cashCid
+        assertMsg "payment must come from the fan" (cash.owner == fan)
         venueCash <- exercise cashCid (Cash_Transfer with newOwner = venue)
         exercise allocationCid (Allocation_IssuePaid with fan, paymentCid = venueCash)
 

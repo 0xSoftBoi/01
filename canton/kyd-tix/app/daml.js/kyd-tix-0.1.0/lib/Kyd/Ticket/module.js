@@ -108,7 +108,7 @@ exports.DvPResaleOffer = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.DvPResaleOffer, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.DvPResaleOffer, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -160,7 +160,7 @@ exports.RoyaltyAccount = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.RoyaltyAccount, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.RoyaltyAccount, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -247,7 +247,7 @@ exports.GiftOffer = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.GiftOffer, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.GiftOffer, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -336,7 +336,7 @@ exports.ResaleOffer = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.ResaleOffer, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.ResaleOffer, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -479,5 +479,5 @@ exports.Ticket = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.Ticket, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.Ticket, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 

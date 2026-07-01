@@ -7,5 +7,5 @@ function __export(m) {
 Object.defineProperty(exports, "__esModule", { value: true });
 var Kyd = require('./Kyd');
 exports.Kyd = Kyd;
-exports.packageId = 'ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519';
+exports.packageId = '80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d';
 exports.packageReference = '#kyd-tix';

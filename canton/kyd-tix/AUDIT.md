@@ -3,17 +3,17 @@
 Self-audit of the Daml model in `daml/`, written against the authorization,
 privacy and contention semantics of Daml 2.10 / Canton. Every claim below is
 backed by an executable adversarial scenario in `daml/Kyd/SecurityTest.daml`
-(12 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
+(13 attack suites) or the functional suites (`Kyd.Test`, `Kyd.TokenTest`).
 The full suite runs warning-free: divulgence-free by construction, not by
-suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10, -11)
-are fixed/resolved**; the remaining items are LOW/INFO (by-design or
+suppression. **All HIGH and MEDIUM findings (KYD-01, -02, -08, -09, -10, -11,
+-12) are fixed/resolved**; the remaining items are LOW/INFO (by-design or
 accepted).
 
 ## Trust model
 
 | Party | Powers | Bounded by |
 | --- | --- | --- |
-| **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, freeze a holding without its owner's consent (KYD-11), redirect a locked holding anywhere but its declared recipient (KYD-11), comp-issue tickets, reprice, rewrite the lender register (KYD-01), or refund escrow unilaterally |
+| **Operator** (KYD platform) | Issues `Cash` (it is an IOU on the operator); fills purchase orders; runs sweep/accrual automation; co-signs tranche trades and receipt refunds | Cannot move owner-held cash, freeze a holding without its owner's consent (KYD-11), redirect a locked holding anywhere but its declared recipient (KYD-11), comp-issue tickets, reprice, rewrite the lender register (KYD-01), fund a fill with cash the order's fan doesn't own (KYD-12), or refund escrow unilaterally |
 | **Venue** | Opens allocations; raises financing; distributes repayments; *co-signs* comps and repricing with the operator | Cannot self-fill paid orders, touch the carved-out financing share, refund escrow unilaterally, comp/reprice without the operator (KYD-08), or burn tickets early — check-in is bounded to a doors window (KYD-10) |
 | **Artist** | Co-signs events; repricing; receives royalties | Cannot issue, spend, or alter financing |
 | **Fan** | Signs purchase orders (authorizing exactly one payment); owns tickets | Resale gated by price cap; redeemed tickets non-transferable |
@@ -197,6 +197,31 @@ standalone call needs the venue live). `Receipt_Release` is now
 `controller operator, venue` for the same reason, closing the wrapper-level
 route in addition to the direct one.
 
+### KYD-12 — PurchaseOrder_Fill never checked the committed cash belonged to the fan (HIGH, fixed)
+
+`PurchaseOrder_Fill` (`controller operator`) exercised `Cash_Transfer` on the
+order's `cashCid` without ever fetching or checking who owned it. This looked
+safe because `Cash_Transfer`'s own `controller owner` requirement is normally
+enough — but Daml authority for a sub-exercise comes from the union of the
+*enclosing* choice's controllers and the enclosing template's signatories,
+not just the note's actual owner. `PurchaseOrder`'s signatory is the fan, so
+every `PurchaseOrder_Fill` transaction already carries `{operator, fan}`
+authority regardless of which `cashCid` was named. A fan could construct a
+`PurchaseOrder` (a plain `create`, which cannot itself validate a foreign
+contract id's owner) naming a `cashCid` they don't own but whose owner's
+authority happens to already be present in the fill transaction — in
+practice, cash owned by the **operator** itself, since the operator's
+authority is trivially present as `PurchaseOrder_Fill`'s controller. The
+operator's own automated sales engine (`autoFillOrders`, which matches
+purely on committed amount vs. shard price — see `Kyd.Triggers`) would then
+authorize spending the *operator's* cash to fund what looks like the fan's
+purchase: a free ticket, drained from the platform's own float one order at
+a time. **Fixed** by fetching `cashCid` and asserting `cash.owner == fan`
+as the first thing `PurchaseOrder_Fill` does, before the `Cash_Transfer`.
+Verified by `testPurchaseOrderCashOwnership` (a `PurchaseOrder` funded with
+operator-owned cash is rejected; the identical order funded with the fan's
+own cash still fills normally).
+
 ```mermaid
 flowchart TB
   subgraph Before["Before KYD-11"]
@@ -237,6 +262,8 @@ venue settlement; the operator+venue sweep) still works unchanged.
 | `testRoleForgery` | Self-issued memberships; accepting another party's invitation |
 | `testEarlyCheckInBlocked` | A venue burning a ticket days early to kill its resale value (KYD-10) — check-in bounded to the doors window |
 | `testGiftAndRefundSecurity` | Non-owner gifting; self-gifts; third-party gift acceptance; fan self-refunds; wrong-amount refunds; refunding/gifting redeemed tickets |
+| `testCommittedFundsLockedInPlace` | A committed lender's funds stay in the lender's own custody but become unspendable (no transfer, no split) the instant they're committed |
+| `testPurchaseOrderCashOwnership` | A fill funded with cash the order's fan doesn't own — e.g. the operator's own cash (KYD-12) — is rejected; the identical order funded with the fan's own cash still fills |
 
 ## Residual assumptions
 

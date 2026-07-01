@@ -11,14 +11,19 @@ export interface QueryResult<T extends object> {
 }
 
 // 800ms keeps the buy -> pass -> door loop feeling live (production swaps
-// this for the JSON API's WebSocket streams).
+// this for the JSON API's WebSocket streams). `ledger` may be null while a
+// caller is still resolving one asynchronously (e.g. DEMO_MODE's lazily
+// -imported mock ledger) — the hook itself must still be called every
+// render either way, so the "not ready yet" case is a null check inside the
+// effect, not a skipped hook call.
 export function useQuery<T extends object, K>(
-  ledger: Ledger,
+  ledger: Ledger | null,
   template: Template<T, K, string>,
 ): QueryResult<T> {
   const [contracts, setContracts] = useState<{ contractId: string; payload: T }[]>([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
+    if (!ledger) return;
     let live = true;
     const fetchOnce = async () => {
       try {

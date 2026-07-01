@@ -209,5 +209,5 @@ exports.Cash = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.Cash, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.Cash, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
