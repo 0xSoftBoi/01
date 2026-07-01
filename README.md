@@ -52,6 +52,13 @@ Built to demonstrate the difference between *writing Daml that compiles* and
   [HANDOFF.md](canton/kyd-tix/HANDOFF.md) that says plainly what is verified
   and what is scaffolded.
 
+<p align="center">
+  <img src="canton/kyd-tix/docs/screenshots/01-discover.png" width="220" alt="Discover tab: tiered dynamic pricing" />
+  <img src="canton/kyd-tix/docs/screenshots/02-my-tickets.png" width="220" alt="My Tickets: live QR pass" />
+  <img src="canton/kyd-tix/docs/screenshots/05-venue-dashboard.png" width="220" alt="Venue dashboard: inventory and TIX financing" />
+</p>
+<p align="center"><em>Real screenshots of the production build against a live Canton stack — full gallery in <a href="canton/kyd-tix/README.md#the-product-app">canton/kyd-tix/README.md</a>.</em></p>
+
 ---
 
 ## Auditing Canton applications

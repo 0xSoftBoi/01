@@ -13,6 +13,14 @@ npm install
 npm run dev                   # http://localhost:5173
 ```
 
+| Discover | My Tickets | Wallet |
+| --- | --- | --- |
+| ![Discover tab](../docs/screenshots/01-discover.png) | ![My Tickets QR pass](../docs/screenshots/02-my-tickets.png) | ![Wallet top-up](../docs/screenshots/03-wallet.png) |
+
+Screenshots are the production build (`npm run build && npm run preview`)
+against a real running stack — the full gallery, including the venue and
+artist roles, is in the [top-level README](../README.md#the-product-app).
+
 ## What the demo shows
 
 Switch roles in the header — each role acts under its OWN party's authority:
