@@ -13,6 +13,7 @@
   "dependencies": {
     "@daml/ledger": "2.10.4",
     "@daml/types": "2.10.4",
+    "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/work-sans": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@kyd/kyd-tix-0.1.0": "file:daml.js/kyd-tix-0.1.0",

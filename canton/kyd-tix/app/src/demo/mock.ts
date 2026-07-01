@@ -80,7 +80,14 @@ function nextId(kind: string): string {
 
 function buildSeed(): Store {
   const now = Date.now();
-  const show1Time = new Date(now + 3 * 3600 * 1000).toISOString();
+  // A realistic showtime: tonight at 8:00 PM (or tomorrow if it's already past),
+  // so the card reads "8:00 PM" rather than whatever "now + a few hours" lands
+  // on — while staying near enough that the door-scan demo (KYD-10's 12h doors
+  // window) still lets the venue check tickets in.
+  const showtime = new Date();
+  showtime.setHours(20, 0, 0, 0);
+  if (showtime.getTime() < now + 60 * 60 * 1000) showtime.setDate(showtime.getDate() + 1);
+  const show1Time = showtime.toISOString();
   const show2Time = new Date(Date.UTC(2026, 8, 1, 23, 0, 0)).toISOString();
 
   // Matches Kyd.Demo:setup exactly: two GA shards + one VIP shard opened on

@@ -1,18 +1,21 @@
-/* KYD design system: matches the real kyd labs brand — light, paper-white,
-   Work Sans + IBM Plex Mono, pure red accent. Not a blockchain explorer. */
+/* KYD design system: matches the real kyd labs product — a warm, dark
+   charcoal theme (#2D2931 base), Inter + IBM Plex Mono, image-forward event
+   cards with real photography, and uppercase mono eyebrow labels. Not a
+   blockchain explorer. */
 :root {
-  --bg: #ffffff;
-  --panel: #ffffff;
-  --panel-2: #f1f5f9;
-  --line: #e2e8f0;
-  --text: #0a0a0a;
-  --muted: #6b6b6b;
-  --accent: #de0000;
-  --accent-2: #3c23f2;
-  --ok: #0a8f4a;
-  --radius: 16px;
+  --bg: #1b181d;         /* page — deep warm charcoal */
+  --panel: #232026;      /* cards / surfaces */
+  --panel-2: #2d2931;    /* elevated (KYD's exact charcoal) — chips, hovers */
+  --line: rgb(255 255 255 / 0.12);
+  --text: #f4f1ee;       /* warm near-white */
+  --muted: #9c98a1;      /* secondary text */
+  --accent: #ff3b34;     /* KYD red, brightened for legibility on dark */
+  --accent-2: #ff8a3d;   /* warm amber — the demand-curve "heat" */
+  --ok: #35c07a;
+  --eyebrow: #e8e4db;    /* cream — the uppercase mono label motif */
+  --radius: 14px;
   --radius-sm: 8px;
-  --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -1px rgb(0 0 0 / 0.06);
+  --shadow: 0 14px 40px -18px rgb(0 0 0 / 0.75);
   --mono: "IBM Plex Mono", "SF Mono", Monaco, Consolas, monospace;
 }
 
@@ -21,16 +24,27 @@
 }
 
 html {
-  color-scheme: light;
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: "Work Sans Variable", "Work Sans", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Inter Variable", "Inter", -apple-system, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+}
+
+/* The signature KYD motif: an uppercase IBM Plex Mono eyebrow with wide
+   tracking, used for section headers, metadata rows and status labels. */
+.eyebrow {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--eyebrow);
 }
 
 .shell {
@@ -78,8 +92,8 @@ header {
   align-items: center;
   gap: 18px;
   padding: 14px 4px;
-  background: linear-gradient(rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.75));
-  backdrop-filter: blur(14px);
+  background: linear-gradient(rgb(27 24 29 / 0.86), rgb(27 24 29 / 0.62));
+  backdrop-filter: blur(16px);
   margin-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
@@ -409,49 +423,75 @@ main {
 .event-card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
-  transition: transform 0.18s;
+  transition: transform 0.18s, border-color 0.18s;
 }
 
 .event-card:hover {
   transform: translateY(-2px);
+  border-color: rgb(255 255 255 / 0.22);
 }
 
+/* Image-forward cover: real event photography under a dark scrim, the title
+   and a mono eyebrow (venue · date) sitting over it — the KYD card. */
 .cover {
-  height: 150px;
+  height: 208px;
   display: flex;
-  align-items: flex-end;
-  padding: 18px;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 20px;
   position: relative;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--panel-2);
+}
+
+.cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
 }
 
 .cover::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(transparent 30%, rgb(0 0 0 / 0.55));
+  z-index: 1;
+  background: linear-gradient(
+    to top,
+    rgb(15 13 16 / 0.92) 0%,
+    rgb(15 13 16 / 0.55) 38%,
+    rgb(15 13 16 / 0.1) 72%,
+    rgb(15 13 16 / 0.25) 100%
+  );
 }
 
 .cover-text {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.cover-eyebrow {
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 8px rgb(0 0 0 / 0.6);
 }
 
 .cover-text h2 {
-  margin: 0 0 2px;
-  font-size: 24px;
-  font-weight: 850;
+  margin: 0;
+  font-size: 27px;
+  font-weight: 800;
   letter-spacing: -0.03em;
-  text-shadow: 0 2px 12px rgb(0 0 0 / 0.5);
-}
-
-.cover-text span {
-  font-size: 13px;
-  font-weight: 600;
-  opacity: 0.9;
+  line-height: 1.08;
+  text-shadow: 0 2px 16px rgb(0 0 0 / 0.55);
 }
 
 .levels {
@@ -498,19 +538,21 @@ main {
 
 .tier {
   display: inline-block;
-  background: var(--panel-2);
+  background: rgb(255 255 255 / 0.06);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 2px 8px;
+  padding: 3px 8px;
+  font-family: var(--mono);
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.07em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
   margin-right: 10px;
 }
 
 .tier.vip {
-  background: linear-gradient(135deg, #2b2410, #3a2f12);
-  border-color: #6b5a1e;
+  background: linear-gradient(135deg, #3a2f12, #26200c);
+  border-color: #7a6522;
   color: #f5d061;
 }
 
@@ -530,18 +572,19 @@ button.buy,
 .pass button:not(.ghost),
 .level button:not(.ghost) {
   background: var(--text);
-  color: var(--bg);
+  color: #17151a;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 9px 20px;
+  padding: 10px 22px;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 700;
   cursor: pointer;
-  transition: transform 0.12s, opacity 0.12s;
+  transition: transform 0.12s, opacity 0.12s, box-shadow 0.12s;
 }
 
 button.buy:hover:not(:disabled) {
-  transform: scale(1.04);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -6px rgb(0 0 0 / 0.7);
 }
 
 button:disabled {
@@ -550,8 +593,8 @@ button:disabled {
 }
 
 button.ghost {
-  background: transparent;
-  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 0.04);
+  border: 1px solid rgb(255 255 255 / 0.22);
   color: var(--text);
   border-radius: var(--radius-sm);
   padding: 8px 14px;
@@ -583,21 +626,30 @@ button.ghost:hover {
 
 .pass {
   --paper: #f7f6f2;
+  /* The pass is a real paper ticket — keep it light on the dark app, with its
+     own neutral scale so labels/hairlines read correctly against the paper. */
+  --muted: #7c7770;
+  --line: #e4e0d6;
+  color: #23201d;
   position: relative;
   background: var(--paper);
-  border-radius: 18px;
+  border-radius: var(--radius);
   overflow: hidden;
-  box-shadow: 0 6px 12px -2px rgb(0 0 0 / 0.12), 0 3px 6px -2px rgb(0 0 0 / 0.08);
+  box-shadow: var(--shadow);
   animation: pop 0.25s ease-out;
 }
 
 .pass-banner {
-  height: 132px;
+  height: 138px;
   position: relative;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
 }
 
 .pass-banner-logo {
   position: absolute;
+  z-index: 2;
   left: 14px;
   bottom: 14px;
   display: flex;

@@ -155,7 +155,12 @@ observers.
 **Open question for KYD.** Who hosts fan parties — KYD's validator (hosted
 wallets, the demo model) or fans' own participants? And what exactly may the
 **artist** see about fans (the model makes the artist an `Event` signatory, so
-they see ticket holders — is that your intended data-ownership posture)?
+they see ticket holders — is that your intended data-ownership posture)? The app
+already ships both ends of the first choice: the hosted default, plus an
+optional **Connect a Canton wallet** self-custody path (`app/src/wallet.ts`)
+that links a fan's own party via a CIP-56 `Holding` disclosure handshake — the
+production question is which becomes the default onboarding, and whether primary
+purchases (not just balance display) should settle from a connected wallet.
 
 ---
 

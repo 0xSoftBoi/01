@@ -7,7 +7,7 @@ import { QRCodeSVG } from "qrcode.react";
 import type Ledger from "@daml/ledger";
 import { Ticket, ResaleOffer, GiftOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
 import { Event, PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
-import { QueryResult, coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
+import { QueryResult, coverHues, coverImage, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
 import { track } from "../analytics";
 import { useToast } from "../Toast";
 import { LogoIcon } from "../Logo";
@@ -212,9 +212,18 @@ export default function TicketsView({ events, fanLedger, fan, otherFans }: Props
               <div
                 className="pass-banner"
                 style={{
-                  background: `linear-gradient(135deg, hsl(${h1} 70% 45%), hsl(${h2} 80% 35%))`,
+                  backgroundImage: `linear-gradient(135deg, hsl(${h1} 62% 40%), hsl(${h2} 72% 28%))`,
                 }}
               >
+                <img
+                  className="cover-img"
+                  src={coverImage(t.payload.eventId, 480)}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
                 <span className="pass-banner-logo">
                   <LogoIcon size={12} />
                   kyd labs
