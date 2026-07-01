@@ -55,6 +55,21 @@ server-side only ([server/README.md](server/README.md)): real RS256-signed
 login tokens, a proxied catalog read, and a mint path gated by webhook
 signature verification — the browser never holds operator authority.
 
+Screenshots below are the production build (`npm run build && npm run
+preview`), driven against a real running stack — sandbox, JSON API, the
+auth/catalog/payments server and the operator triggers — not mocked. The
+"My Tickets" pass and the "2/5 sold" tier counter are the same purchase: a
+fan buy that the operator's fill trigger settled on-ledger between the two
+screenshots.
+
+| Fan: Discover | Fan: My Tickets (live QR) | Fan: Wallet top-up |
+| --- | --- | --- |
+| ![Discover tab: two events, tiered dynamic pricing](docs/screenshots/01-discover.png) | ![My Tickets: two QR passes with resale cap](docs/screenshots/02-my-tickets.png) | ![Wallet sheet: balance and top-up](docs/screenshots/03-wallet.png) |
+
+| Venue: Door scanner | Venue: Financing dashboard | Artist: Royalties |
+| --- | --- | --- |
+| ![Door manifest with check-in](docs/screenshots/04-venue-door.png) | ![Venue dashboard: tier inventory, live price levels, TIX lenders](docs/screenshots/05-venue-dashboard.png) | ![Artist royalties: per-event resale accrual](docs/screenshots/06-artist-royalties.png) |
+
 ---
 
 ## What KYD Labs runs on Solana (research)
