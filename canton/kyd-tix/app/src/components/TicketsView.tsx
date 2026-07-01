@@ -9,6 +9,14 @@ import { Ticket, ResaleOffer, GiftOffer } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticke
 import { Event, PurchaseOrder } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { QueryResult, coverHues, exactNote, fmtMoney, shortParty, usePendingOrders, useQuery } from "../api";
 import { useToast } from "../Toast";
+import { LogoIcon } from "../Logo";
+
+// Cosmetic "ticket code" printed under the QR, echoing the real ticket's
+// barcode-with-digits footer — derived from the contract id, not a real
+// scan target (the QR itself is that; see fgColor comment below).
+function ticketCode(contractId: string): string {
+  return contractId.replace(/[^0-9a-zA-Z]/g, "").slice(-20).toUpperCase();
+}
 
 interface Props {
   events: QueryResult<Event>;
@@ -158,92 +166,117 @@ export default function TicketsView({ events, fanLedger, fan, otherFans }: Props
       <div className="passes">
         {pending.map((p) => (
           <div className="pass pending" key={p.contractId}>
-            <div className="pass-head">
+            <div className="pass-body" style={{ paddingTop: 18 }}>
               <div>
-                <h3>{eventName(p.payload.eventId)}</h3>
+                <p className="pass-field-label">Show:</p>
+                <p className="pass-field-value">{eventName(p.payload.eventId)}</p>
                 <span className="tier">{p.payload.tierId}</span>
               </div>
-            </div>
-            <div className="qr shimmer" />
-            <div className="pass-foot">
-              <span className="muted small">Issuing your pass…</span>
-              <button
-                className="ghost small-btn"
-                onClick={() =>
-                  fanLedger.exercise(PurchaseOrder.PurchaseOrder_Cancel, p.contractId as never, {})
-                }
-              >
-                Cancel order
-              </button>
+              <div className="qr shimmer" />
+              <div className="pass-foot">
+                <span className="muted small">Issuing your pass…</span>
+                <button
+                  className="ghost small-btn"
+                  onClick={() =>
+                    fanLedger.exercise(PurchaseOrder.PurchaseOrder_Cancel, p.contractId as never, {})
+                  }
+                >
+                  Cancel order
+                </button>
+              </div>
             </div>
           </div>
         ))}
 
         {mine.map((t) => {
           const [h1, h2] = coverHues(t.payload.eventId);
+          const when = new Date(t.payload.eventTime).toLocaleString(undefined, {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          });
           return (
             <div className="pass" key={t.contractId}>
               <div
-                className="pass-band"
+                className="pass-banner"
                 style={{
-                  background: `linear-gradient(90deg, hsl(${h1} 70% 45%), hsl(${h2} 80% 35%))`,
+                  background: `linear-gradient(135deg, hsl(${h1} 70% 45%), hsl(${h2} 80% 35%))`,
                 }}
-              />
-              <div className="pass-head">
-                <div>
-                  <h3>{eventName(t.payload.eventId)}</h3>
-                  <span className="muted small">
-                    {t.payload.tierId} · #{t.payload.serial}
-                  </span>
-                </div>
-                {t.payload.redeemed && <span className="badge used">USED</span>}
-              </div>
-              <div className={`qr ${t.payload.redeemed ? "dim" : ""}`}>
-                <QRCodeSVG value={t.contractId} size={128} bgColor="#ffffff" fgColor="#0b0b0c" />
-              </div>
-              <div className="perforation" />
-              <div className="pass-foot">
-                <span className="muted small">
-                  Paid {fmtMoney(t.payload.facePrice)} · resale cap{" "}
-                  {fmtMoney(t.payload.maxResalePrice)}
+              >
+                <span className="pass-banner-logo">
+                  <LogoIcon size={12} />
+                  kyd labs
                 </span>
-                {!t.payload.redeemed &&
-                  (selling === t.contractId ? (
-                    <div className="sell-form">
-                      <select value={buyerParty} onChange={(e) => setBuyerParty(e.target.value)}>
-                        {otherFans.map((f) => (
-                          <option key={f.party} value={f.party}>
-                            to {f.label}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        placeholder={`≤ ${Number(t.payload.maxResalePrice).toFixed(2)}`}
-                        max={Number(t.payload.maxResalePrice)}
-                        value={price}
-                        onChange={(e) => setPrice(e.target.value)}
-                      />
-                      <button
-                        disabled={
-                          !price || Number(price) > Number(t.payload.maxResalePrice) || Number(price) <= 0
-                        }
-                        onClick={() => listForResale(t.contractId)}
-                      >
-                        Send
+              </div>
+              <div className="pass-torn" />
+              <div className="pass-body">
+                <div>
+                  <p className="pass-field-label">Show:</p>
+                  <p className="pass-field-value">{eventName(t.payload.eventId)}</p>
+                </div>
+                <div>
+                  <p className="pass-field-label">Date</p>
+                  <p className="pass-field-value">{when}</p>
+                </div>
+                <div>
+                  <p className="pass-field-label">Tier</p>
+                  <p className="pass-field-value">
+                    {t.payload.tierId} · #{t.payload.serial}
+                  </p>
+                </div>
+                {t.payload.redeemed && <span className="badge used pass-status">USED</span>}
+                <div className="perforation">
+                  <span className="pass-sticker" />
+                </div>
+                <div className={`qr ${t.payload.redeemed ? "dim" : ""}`}>
+                  <QRCodeSVG value={t.contractId} size={128} bgColor="#ffffff" fgColor="#0a0a0a" />
+                </div>
+                <p className="pass-code">{ticketCode(t.contractId)}</p>
+                <div className="pass-foot">
+                  <span className="muted small">
+                    Paid {fmtMoney(t.payload.facePrice)} · resale cap{" "}
+                    {fmtMoney(t.payload.maxResalePrice)}
+                  </span>
+                  {!t.payload.redeemed &&
+                    (selling === t.contractId ? (
+                      <div className="sell-form">
+                        <select value={buyerParty} onChange={(e) => setBuyerParty(e.target.value)}>
+                          {otherFans.map((f) => (
+                            <option key={f.party} value={f.party}>
+                              to {f.label}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          placeholder={`≤ ${Number(t.payload.maxResalePrice).toFixed(2)}`}
+                          max={Number(t.payload.maxResalePrice)}
+                          value={price}
+                          onChange={(e) => setPrice(e.target.value)}
+                        />
+                        <button
+                          disabled={
+                            !price || Number(price) > Number(t.payload.maxResalePrice) || Number(price) <= 0
+                          }
+                          onClick={() => listForResale(t.contractId)}
+                        >
+                          Send
+                        </button>
+                        <button className="ghost" onClick={() => sendGift(t.contractId)}>
+                          Gift free
+                        </button>
+                        <button className="ghost" onClick={() => setSelling(null)}>
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button className="ghost small-btn" onClick={() => setSelling(t.contractId)}>
+                        Transfer / sell
                       </button>
-                      <button className="ghost" onClick={() => sendGift(t.contractId)}>
-                        Gift free
-                      </button>
-                      <button className="ghost" onClick={() => setSelling(null)}>
-                        ✕
-                      </button>
-                    </div>
-                  ) : (
-                    <button className="ghost small-btn" onClick={() => setSelling(t.contractId)}>
-                      Transfer / sell
-                    </button>
-                  ))}
+                    ))}
+                </div>
               </div>
             </div>
           );

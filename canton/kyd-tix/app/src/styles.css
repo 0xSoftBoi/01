@@ -1,17 +1,18 @@
-/* KYD design system: stark, typographic, alive. A ticketing product,
-   not a blockchain explorer. */
+/* KYD design system: matches the real kyd labs brand — light, paper-white,
+   Work Sans + IBM Plex Mono, pure red accent. Not a blockchain explorer. */
 :root {
-  --bg: #09090b;
-  --panel: #131316;
-  --panel-2: #1a1a1f;
-  --line: #232329;
-  --text: #fafafa;
-  --muted: #8b8b94;
-  --accent: #ff3b1f;
-  --accent-2: #ff7a18;
-  --ok: #2ee68a;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f1f5f9;
+  --line: #e2e8f0;
+  --text: #0a0a0a;
+  --muted: #6b6b6b;
+  --accent: #de0000;
+  --accent-2: #3c23f2;
+  --ok: #0a8f4a;
   --radius: 16px;
-  --shadow: 0 8px 32px rgb(0 0 0 / 0.45);
+  --shadow: 0 8px 28px rgb(0 0 0 / 0.1);
+  --mono: "IBM Plex Mono", "SF Mono", Monaco, Consolas, monospace;
 }
 
 * {
@@ -19,14 +20,14 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
   margin: 0;
-  background: radial-gradient(1200px 500px at 50% -10%, #18181d 0%, var(--bg) 60%);
+  background: var(--bg);
   color: var(--text);
-  font-family: "Inter Variable", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Work Sans Variable", "Work Sans", -apple-system, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 }
@@ -47,7 +48,7 @@ body {
 
 .boot-card {
   text-align: center;
-  background: var(--panel);
+  background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 24px;
   padding: 40px 48px;
@@ -61,8 +62,10 @@ body {
   border-radius: 10px;
   padding: 14px 18px;
   font-size: 13px;
+  font-family: var(--mono);
   color: var(--ok);
 }
+
 
 /* ---------------- header ---------------- */
 
@@ -74,24 +77,55 @@ header {
   align-items: center;
   gap: 18px;
   padding: 14px 4px;
-  background: linear-gradient(rgb(9 9 11 / 0.92), rgb(9 9 11 / 0.75));
+  background: linear-gradient(rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.75));
   backdrop-filter: blur(14px);
   margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
 }
 
 .brand {
-  font-size: 26px;
-  font-weight: 900;
-  letter-spacing: -0.05em;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
-.brand.xl {
-  font-size: 44px;
-  margin-bottom: 12px;
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.brand .dot {
-  color: var(--accent);
+.logo-icon {
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.logo-word {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.logo-xl .logo-word {
+  font-size: 38px;
+}
+
+.logo-xl {
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.logo-tagline {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 10px;
 }
 
 .demo-badge {
@@ -259,8 +293,8 @@ main {
 }
 
 .card.glow {
-  border-color: rgb(255 59 31 / 0.45);
-  box-shadow: 0 0 0 1px rgb(255 59 31 / 0.15), var(--shadow);
+  border-color: rgb(222 0 0 / 0.35);
+  box-shadow: 0 0 0 1px rgb(222 0 0 / 0.12), var(--shadow);
 }
 
 .card h3 {
@@ -309,6 +343,7 @@ main {
 .cover-text {
   position: relative;
   z-index: 1;
+  color: #fff;
 }
 
 .cover-text h2 {
@@ -444,44 +479,85 @@ button.ghost:hover {
   margin-top: 14px;
 }
 
-/* ---------------- passes ---------------- */
+/* ---------------- passes: torn-paper ticket stub ---------------- */
 
 .passes {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 18px;
+  gap: 24px;
 }
 
 .pass {
+  --paper: #f7f6f2;
   position: relative;
-  background: linear-gradient(170deg, var(--panel-2), var(--panel));
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  padding: 0 18px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  background: var(--paper);
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: var(--shadow);
+  box-shadow: 0 14px 32px rgb(0 0 0 / 0.14);
   animation: pop 0.25s ease-out;
 }
 
-.pass-band {
-  height: 6px;
-  margin: 0 -18px;
+.pass-banner {
+  height: 132px;
+  position: relative;
 }
 
-.pass-head {
+.pass-banner-logo {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding-top: 12px;
+  align-items: center;
+  gap: 6px;
+  background: rgb(255 255 255 / 0.92);
+  color: #0a0a0a;
+  border-radius: 999px;
+  padding: 5px 11px 5px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
 }
 
-.pass-head h3 {
-  margin: 0 0 3px;
-  font-size: 17px;
-  letter-spacing: -0.02em;
+.pass-banner-logo svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Torn-paper edge between the photo banner and the ticket body. */
+.pass-torn {
+  height: 12px;
+  background: var(--paper);
+  clip-path: polygon(
+    0% 0%, 4% 100%, 8% 15%, 12% 100%, 16% 20%, 20% 100%, 24% 10%, 28% 100%,
+    32% 25%, 36% 100%, 40% 5%, 44% 100%, 48% 18%, 52% 100%, 56% 8%, 60% 100%,
+    64% 22%, 68% 100%, 72% 12%, 76% 100%, 80% 6%, 84% 100%, 88% 20%, 92% 100%,
+    96% 10%, 100% 100%, 100% 0%
+  );
+}
+
+.pass-body {
+  padding: 4px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pass-field-label {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.pass-field-value {
+  margin: 1px 0 0;
+  font-size: 15px;
+  color: #2a2a2a;
+}
+
+.pass-status {
+  align-self: flex-start;
 }
 
 .qr {
@@ -490,14 +566,41 @@ button.ghost:hover {
   padding: 12px;
   display: grid;
   place-items: center;
-  align-self: center;
+  justify-self: center;
   min-height: 152px;
   min-width: 152px;
   transition: opacity 0.3s;
+  border: 1px solid var(--line);
 }
 
 .qr.dim {
   opacity: 0.35;
+}
+
+.pass-code {
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+.pass-sticker {
+  position: absolute;
+  left: 18px;
+  top: -22px;
+  width: 26px;
+  height: 38px;
+  border-radius: 4px;
+  transform: rotate(-8deg);
+  background: linear-gradient(
+    120deg,
+    #ff9ad1, #a6e3ff, #c3ffe0, #ffe29a, #d6b3ff, #ff9ad1
+  );
+  background-size: 260% 260%;
+  opacity: 0.85;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.25);
 }
 
 .perforation {
@@ -533,11 +636,11 @@ button.ghost:hover {
 }
 
 .pass.pending {
-  border-style: dashed;
+  border: 2px dashed var(--line);
 }
 
 .shimmer {
-  background: linear-gradient(100deg, #1d1d22 40%, #2a2a31 50%, #1d1d22 60%);
+  background: linear-gradient(100deg, #eef1f5 40%, #ffffff 50%, #eef1f5 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite linear;
   border-radius: 14px;
@@ -558,7 +661,7 @@ button.ghost:hover {
 }
 
 .badge.in {
-  background: rgb(46 230 138 / 0.15);
+  background: rgb(10 143 74 / 0.12);
   color: var(--ok);
 }
 
@@ -679,11 +782,11 @@ td {
 }
 
 .toast.ok {
-  border-color: rgb(46 230 138 / 0.4);
+  border-color: rgb(10 143 74 / 0.4);
 }
 
 .toast.err {
-  border-color: rgb(255 59 31 / 0.5);
+  border-color: rgb(222 0 0 / 0.4);
 }
 
 /* ---------------- misc ---------------- */
@@ -732,7 +835,7 @@ td {
 
 .skeleton {
   border-radius: 20px;
-  background: linear-gradient(100deg, #131316 40%, #1c1c21 50%, #131316 60%);
+  background: linear-gradient(100deg, #eef1f5 40%, #ffffff 50%, #eef1f5 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite linear;
 }
