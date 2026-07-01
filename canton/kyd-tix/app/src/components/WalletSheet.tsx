@@ -1,7 +1,7 @@
 // The wallet, made tangible: balance front and center, card on-ramp with
 // preset amounts. No addresses, no tokens, no gas — money in, tickets out.
 import { useState } from "react";
-import { fmtMoney, topUp } from "../api";
+import { DEMO_MODE, fmtMoney, topUp } from "../api";
 import { useToast } from "../Toast";
 
 interface Props {
@@ -52,9 +52,9 @@ export default function WalletSheet({ fanToken, balance, onClose }: Props) {
           ))}
         </div>
         <p className="muted small">
-          Balance is minted server-side, only after a signature-verified charge event —
-          the same path a real PSP webhook (Stripe, Adyen) would trigger. This demo
-          simulates the card processor; the mint code itself is the production path.
+          {DEMO_MODE
+            ? "This deploy has no live backend — funds are simulated entirely in your browser. Against the real stack, this same top-up is minted server-side only after a signature-verified charge event, the path a real PSP webhook (Stripe, Adyen) would trigger."
+            : "Balance is minted server-side, only after a signature-verified charge event — the same path a real PSP webhook (Stripe, Adyen) would trigger. This demo simulates the card processor; the mint code itself is the production path."}
         </p>
         <button className="ghost wide" onClick={onClose}>
           Done

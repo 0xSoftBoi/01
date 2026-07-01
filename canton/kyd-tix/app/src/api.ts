@@ -3,11 +3,26 @@
 // "logging in" is picking an identity (in production: phone/email + JWT from
 // the auth provider), money is a balance with a card on-ramp, buying is one
 // tap. Everything in this file exists to keep that abstraction airtight.
+//
+// DEMO_MODE (set at build time via VITE_DEMO_MODE, see the hosted-demo
+// deploy) swaps every network call below for src/demo/mock.ts's in-browser
+// simulation — used when this app is deployed standalone (e.g. to Vercel)
+// with no live Canton participant/JSON API/server behind it. exactNote and
+// placeOrder are untouched either way: they're written against the generic
+// `Ledger` shape (query/create/exercise), so they run the same against the
+// mock ledger as they do against the real one — see demo/mock.ts.
 import { useEffect, useMemo, useState } from "react";
 import Ledger from "@daml/ledger";
-import type { ContractId, Template } from "@daml/types";
+import type { ContractId } from "@daml/types";
 import { Cash } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Cash";
 import { Event, PurchaseOrder, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
+import { useQuery, type QueryResult } from "./ledgerQuery";
+import * as demo from "./demo/mock";
+
+export { useQuery };
+export type { QueryResult };
+
+export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 
 // ---------------------------------------------------------------------------
 // Demo identities
@@ -32,6 +47,7 @@ export const ROLES: { key: RoleKey; label: string; short: string; kind: "fan" | 
 ];
 
 export async function loadDemoParties(): Promise<DemoParties> {
+  if (DEMO_MODE) return demo.loadDemoParties();
   const res = await fetch("/demo-parties.json");
   if (!res.ok) throw new Error("stack-not-running");
   return (await res.json()) as DemoParties;
@@ -67,6 +83,9 @@ function ledgerFromToken(token: string): Ledger {
 // Re-logs in whenever the selected role changes (switching identity in the
 // demo == a fresh login). Returns null while the exchange is in flight.
 export function useSession(partyKey: RoleKey | null): { session: Session | null; ledger: Ledger | null } {
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- DEMO_MODE is a
+  // build-time constant (import.meta.env), never toggles across renders.
+  if (DEMO_MODE) return demo.useSession(partyKey);
   const [session, setSession] = useState<Session | null>(null);
   useEffect(() => {
     if (!partyKey) {
@@ -90,46 +109,6 @@ export function useSession(partyKey: RoleKey | null): { session: Session | null;
   return { session, ledger };
 }
 
-// ---------------------------------------------------------------------------
-// Polling query hook. 800ms keeps the buy -> pass -> door loop feeling live
-// (production swaps this for the JSON API's WebSocket streams).
-
-export interface QueryResult<T extends object> {
-  contracts: { contractId: string; payload: T }[];
-  loading: boolean;
-}
-
-export function useQuery<T extends object, K>(
-  ledger: Ledger,
-  template: Template<T, K, string>,
-): QueryResult<T> {
-  const [contracts, setContracts] = useState<{ contractId: string; payload: T }[]>([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let live = true;
-    const fetchOnce = async () => {
-      try {
-        const result = await ledger.query(template);
-        if (live) {
-          setContracts(
-            result.map((c) => ({ contractId: c.contractId as string, payload: c.payload })),
-          );
-          setLoading(false);
-        }
-      } catch {
-        // keep last good state; the stack may still be booting
-      }
-    };
-    fetchOnce();
-    const t = setInterval(fetchOnce, 800);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [ledger, template]);
-  return { contracts, loading };
-}
-
 // Public catalog reads, proxied through the server's own operator session
 // (server/src/catalog.ts) instead of the browser holding an operator-scoped
 // Ledger. Same polling shape as useQuery so the views barely change.
@@ -144,6 +123,8 @@ interface CatalogResponse {
 }
 
 export function useCatalog(): CatalogResult {
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- see useSession above
+  if (DEMO_MODE) return demo.useCatalog();
   const [events, setEvents] = useState<QueryResult<Event>["contracts"]>([]);
   const [allocs, setAllocs] = useState<QueryResult<TierAllocation>["contracts"]>([]);
   const [loading, setLoading] = useState(true);
@@ -208,6 +189,7 @@ export function usePendingOrders(ledger: Ledger, fan: string) {
 // ever happens inside processPspWebhook after a real HMAC signature check
 // (server/src/psp.ts). No operator credential is reachable from here.
 export async function topUp(fanToken: string, amount: number): Promise<void> {
+  if (DEMO_MODE) return demo.topUp(fanToken, amount);
   const res = await fetch("/payments/topup", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${fanToken}` },

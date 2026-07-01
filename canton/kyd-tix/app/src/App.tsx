@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type Ledger from "@daml/ledger";
 import {
+  DEMO_MODE,
   DemoParties,
   ROLES,
   RoleKey,
@@ -155,6 +156,11 @@ export default function App() {
         <header>
           <div className="brand">
             KYD<span className="dot">.</span>
+            {DEMO_MODE && (
+              <span className="demo-badge" title="Simulated in your browser — no live Canton ledger behind this deploy">
+                demo
+              </span>
+            )}
           </div>
           <nav className="tabs">
             {TABS[roleInfo.kind].map((t) => (
