@@ -10,6 +10,7 @@ audit/lib/
 **/node_modules/
 *.dar
 canton/kyd-tix/log/
+canton/kyd-tix/server/auth-proof/log/
 canton/kyd-tix/app/public/demo-parties.json
 canton/kyd-tix/ios/**/*.xcodeproj
 
