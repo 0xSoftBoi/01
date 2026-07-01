@@ -4,6 +4,29 @@ Closes HANDOFF.md's production gaps #1 (auth), #3 (catalog service) and #4
 (PSP on-ramp) with real code, not a plan: this is the one place an operator
 credential exists, and it never crosses into the browser.
 
+```mermaid
+sequenceDiagram
+  participant Browser
+  participant Server as server (auth, catalog, PSP)
+  participant JSONAPI as JSON API
+  participant Canton as Canton participant
+
+  Browser->>Server: POST /auth/login partyKey
+  Server->>Server: ensureUserForParty, admin session, provision Daml User
+  Server->>Server: issueLedgerToken, RS256, sub = Daml User id
+  Server-->>Browser: signed token, party-scoped only
+  Browser->>JSONAPI: query or exercise, Bearer token
+  JSONAPI->>Canton: forward command
+  Canton->>Server: fetch JWKS public key
+  Canton->>Canton: verify signature, resolve User rights
+  Canton-->>JSONAPI: authorized result
+  JSONAPI-->>Browser: response
+```
+
+Everything left of the JSON API is this server's problem, not the browser's:
+the operator credential, the admin session, the Daml User provisioning step —
+none of it is a shape the browser can ever hold.
+
 ## What changed
 
 Before this package, the web app (`app/`) held an operator-scoped Ledger
