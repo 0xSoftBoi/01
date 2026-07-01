@@ -107,7 +107,7 @@ exports.TrancheOffer = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.TrancheOffer, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.TrancheOffer, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -267,7 +267,7 @@ exports.SyndicatedLoan = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.SyndicatedLoan, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.SyndicatedLoan, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -339,7 +339,7 @@ exports.OpenCommitment = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.OpenCommitment, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.OpenCommitment, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -437,7 +437,7 @@ exports.OpenOfferingListing = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.OpenOfferingListing, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.OpenOfferingListing, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 
@@ -554,7 +554,7 @@ exports.FinancingOffering = damlTypes.assembleTemplate(
 );
 
 
-damlTypes.registerTemplate(exports.FinancingOffering, ['ceef8cbd3c876d1a2b47ae14a2a82984bc90005cfcb7eede410c3485b2073519', '#kyd-tix']);
+damlTypes.registerTemplate(exports.FinancingOffering, ['80e4174949b6188511ec439f121c7f284b9cf72d9a2856a76e7627c684e48b2d', '#kyd-tix']);
 
 
 

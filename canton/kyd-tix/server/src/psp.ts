@@ -10,6 +10,14 @@ import type { MintableLedger } from "./ledgerSession.js";
 // (AUDIT.md production gap #4: the demo previously minted from a
 // browser-held operator token directly).
 const WEBHOOK_SECRET = process.env.PSP_WEBHOOK_SECRET ?? "demo-webhook-secret-do-not-use-in-production";
+if (!process.env.PSP_WEBHOOK_SECRET) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[psp] PSP_WEBHOOK_SECRET is not set — falling back to a well-known demo " +
+      "secret. Anyone who knows this string can forge a charge.succeeded event " +
+      "and mint Cash. Set PSP_WEBHOOK_SECRET before deploying this outside a demo.",
+  );
+}
 
 export function signPspEvent(rawBody: string): string {
   return "sha256=" + createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
@@ -63,7 +71,7 @@ export async function processPspWebhook(
     return { status: 202, body: { ignored: true } };
   }
   const { fanParty, amount } = event.data ?? {};
-  if (typeof fanParty !== "string" || typeof amount !== "number" || !(amount > 0)) {
+  if (typeof fanParty !== "string" || typeof amount !== "number" || !Number.isFinite(amount) || !(amount > 0)) {
     return { status: 400, body: { error: "malformed charge event" } };
   }
   await session.create(Cash, {

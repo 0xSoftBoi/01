@@ -11,7 +11,7 @@ flowchart LR
   IOS["ios/KYDFan<br/>SwiftUI source"]
   SERVER["server/<br/>auth + JWKS + catalog proxy + PSP webhook"]
   JSONAPI["JSON API"]
-  DAML["daml/<br/>Kyd.* modules, 35 scenarios"]
+  DAML["daml/<br/>Kyd.* modules, 34 scenarios"]
   TRIGGERS["Kyd.Triggers<br/>autoFill / sweep / accrue"]
   PROOFS["privacy-proof/ + server/auth-proof/<br/>real multi-participant Canton"]
 
@@ -31,7 +31,7 @@ Canton*, not just tests in-memory — see `privacy-proof/README.md` and
 ## One-command map
 
 ```
-make test        # Daml: 2 packages, 35 scenarios (functional/adversarial/CIP-56)
+make test        # Daml: 2 packages, 34 scenarios (functional/adversarial/CIP-56)
 make server-test # auth/catalog/payments server: 26 tests, no ledger required
 make app         # web app: codegen + type-check + production build
 make demo        # local stack: sandbox + seed + JSON API + server + 3 triggers
@@ -45,7 +45,7 @@ every push touching this tree.
 
 | Layer | Verification |
 | --- | --- |
-| Daml model (`daml/`) | 35 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
+| Daml model (`daml/`) | 34 scenarios in CI: functional + adversarial attack suites + CIP-56 interface suites + demo seed. Zero warnings (divulgence-free). |
 | Contention (`integration/client/src/bench.ts`) | **Measured** on a local sandbox: sharding gives 8.7× (16 concurrent) and 13.7× (24 concurrent) throughput, contention retries 100s → 0, scaling with concurrency. `npm run bench -- N`. Not in CI (needs a running ledger). |
 | Multi-participant on real Canton (`privacy-proof/`) | **Proven on a real 2-participant + 1-domain Canton network** (`./run.sh`): the `Cash` privacy primitive AND the full app (sharded issuance, paid sale, cross-participant gift) — a competing venue's node holds none of another venue's events/tickets. Race-free, deterministic. Not in CI (needs a running Canton); run on demand. |
 | Web app (`app/`) | Type-check + production build in CI. The full runtime loop (JWT → catalog → split → order → trigger fill → pass; financing receipt escrowed) was driven over HTTP against the running stack during development. |
@@ -107,12 +107,14 @@ every push touching this tree.
 ## File map
 
 ```
-daml/                 the model (8 modules) + 4 test modules
+daml/                 the model (9 modules) + 3 test modules
 splice-token-standard/ vendored CIP-56 interfaces (separate package, SCU rule)
 app/                  web product (React/TS, PWA-installable)
+app/src/demo/mock.ts  standalone Vercel deploy path (VITE_DEMO_MODE) — no
+                       Canton behind it; app/README.md#standalone-demo-build-no-canton-behind-it
 server/               auth/catalog/payments — the custody boundary (server/README.md)
 ios/KYDFan/           native fan app (SwiftUI, XcodeGen)
 integration/          JSON API config, local stack script, headless client
 validator/            network strategy (README) + operational runbook
-AUDIT.md              trust model, findings KYD-01..11, attack coverage
+AUDIT.md              trust model, findings KYD-01..12, attack coverage
 ```

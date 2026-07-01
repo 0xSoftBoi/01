@@ -11,18 +11,17 @@
 // The seam is `MockLedger`, which implements the three methods
 // (query/create/exercise) that api.ts's ledger-generic helpers (useQuery,
 // exactNote, placeOrder) already call — so those helpers run completely
-// unmodified against it. Only the functions that talk to the network
-// directly (useSession, loadDemoParties, useCatalog, topUp) have a demo
-// counterpart here, wired in by api.ts's DEMO_MODE branch.
-import { useEffect, useState } from "react";
+// unmodified against it. loadDemoParties/topUp (plain async functions) and
+// mockLedger/partyForRole (plain values) are the demo counterparts to the
+// functions that talk to the network directly in the real implementation —
+// api.ts owns all the actual React hooks, calling straight into these.
 import type Ledger from "@daml/ledger";
 import { Cash } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Cash";
 import { Event, PurchaseOrder, TierAllocation } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Event";
 import { GiftOffer, ResaleOffer, Ticket } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Ticket";
 import { SyndicatedLoan } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Tix";
 import { RevenueShare } from "@kyd/kyd-tix-0.1.0/lib/Kyd/Settlement";
-import { useQuery } from "../ledgerQuery";
-import type { CatalogResult, DemoParties, RoleKey, Session } from "../api";
+import type { DemoParties, RoleKey } from "../api";
 
 // ---------------------------------------------------------------------------
 // Identities — same hint shape as Kyd.Demo:setup's allocatePartyWithHint.
@@ -297,19 +296,39 @@ function allocatePayment(
   return [[t, p], ...allocatePayment(payRemaining - p, rest)];
 }
 
+// Mirrors Kyd.Triggers.sweepRevenue + Loan_SweepRevenue: for each loan, only
+// the receipts scoped to that loan's (operator, venue, eventId) are eligible
+// to be swept, and once a loan's tranches are all paid down to zero it is
+// archived (removed from the register) rather than left around as a
+// zeroed-out sink that silently absorbs future receipts.
 function sweep(): void {
-  if (store.receipts.length === 0) return;
-  const totalShare = store.receipts.reduce((s, r) => s + Number(r.payload.amount), 0);
-  store.receipts = [];
-  const loan = store.loans.find((l) => l.payload.eventId === "SHOW-001");
-  if (!loan) return;
-  const tranches = (loan.payload as unknown as { tranches: { lender: string; outstanding: string }[] }).tranches;
-  const paid = allocatePayment(
-    totalShare,
-    tranches.map((t) => ({ lender: t.lender, outstanding: Number(t.outstanding) })),
-  );
-  const newTranches = paid.map(([t, p]) => ({ lender: t.lender, outstanding: Math.max(0, t.outstanding - p).toFixed(10) }));
-  loan.payload = { ...loan.payload, tranches: newTranches } as unknown as SyndicatedLoan;
+  for (const loan of [...store.loans]) {
+    const l = loan.payload as unknown as { operator: string; venue: string; eventId: string; tranches: { lender: string; outstanding: string }[] };
+    const pending = store.receipts.filter(
+      (r) =>
+        r.payload.operator === l.operator &&
+        r.payload.venue === l.venue &&
+        r.payload.eventId === l.eventId,
+    );
+    if (pending.length === 0) continue;
+    const totalShare = pending.reduce((s, r) => s + Number(r.payload.amount), 0);
+    const sweptIds = new Set(pending.map((r) => r.contractId));
+    store.receipts = store.receipts.filter((r) => !sweptIds.has(r.contractId));
+
+    const paid = allocatePayment(
+      totalShare,
+      l.tranches.map((t) => ({ lender: t.lender, outstanding: Number(t.outstanding) })),
+    );
+    const newTranches = paid.map(([t, p]) => ({ lender: t.lender, outstanding: Math.max(0, t.outstanding - p).toFixed(10) }));
+    const remaining = newTranches.filter((t) => Number(t.outstanding) > 0);
+    if (remaining.length === 0) {
+      // All tranches fully paid down — archive the loan, same as the real
+      // Loan_SweepRevenue returning None when `remaining` tranches is empty.
+      store.loans = store.loans.filter((x) => x.contractId !== loan.contractId);
+    } else {
+      loan.payload = { ...loan.payload, tranches: newTranches } as unknown as SyndicatedLoan;
+    }
+  }
 }
 
 let running = false;
@@ -381,19 +400,25 @@ class MockLedger {
       case "Ticket_Offer": {
         const idx = store.tickets.findIndex((t) => t.contractId === cid);
         if (idx === -1) throw new Error("ticket not found");
-        const t = store.tickets[idx].payload;
+        const t = store.tickets[idx].payload as unknown as { redeemed: boolean; owner: string; maxResalePrice: string };
+        if (t.redeemed) throw new Error("redeemed tickets cannot be resold");
+        const salePrice = Number(args.salePrice);
+        if (salePrice > Number(t.maxResalePrice)) throw new Error("resale price exceeds the anti-scalping cap");
+        if (args.buyer === t.owner) throw new Error("buyer must differ from the current owner");
         store.tickets.splice(idx, 1);
         const offerCid = nextId("ResaleOffer");
         store.resaleOffers.push({
           contractId: offerCid,
-          payload: { ticket: t, buyer: args.buyer, salePrice: Number(args.salePrice).toFixed(10) } as unknown as ResaleOffer,
+          payload: { ticket: t, buyer: args.buyer, salePrice: salePrice.toFixed(10) } as unknown as ResaleOffer,
         });
         return [offerCid, []];
       }
       case "Ticket_OfferGift": {
         const idx = store.tickets.findIndex((t) => t.contractId === cid);
         if (idx === -1) throw new Error("ticket not found");
-        const t = store.tickets[idx].payload;
+        const t = store.tickets[idx].payload as unknown as { redeemed: boolean; owner: string };
+        if (t.redeemed) throw new Error("redeemed tickets cannot be gifted");
+        if (args.recipient === t.owner) throw new Error("recipient must differ from the current owner");
         store.tickets.splice(idx, 1);
         const giftCid = nextId("GiftOffer");
         store.giftOffers.push({ contractId: giftCid, payload: { ticket: t, recipient: args.recipient } as unknown as GiftOffer });
@@ -407,9 +432,14 @@ class MockLedger {
           salePrice: string;
           buyer: string;
         };
-        store.resaleOffers.splice(idx, 1);
         const cashIdx = store.cash.findIndex((c) => c.contractId === args.cashCid);
-        if (cashIdx !== -1) store.cash.splice(cashIdx, 1);
+        if (cashIdx === -1) throw new Error("payment note not found");
+        const note = store.cash[cashIdx];
+        if (Number(note.payload.amount) !== Number(offer.salePrice)) {
+          throw new Error("payment must equal the agreed sale price");
+        }
+        store.resaleOffers.splice(idx, 1);
+        store.cash.splice(cashIdx, 1);
         const salePrice = Number(offer.salePrice);
         const royalty = (salePrice * offer.ticket.royaltyBps) / 10000;
         if (royalty > 0) {
@@ -465,6 +495,7 @@ class MockLedger {
         const tier = ev.tiers.find((t) => t.tierId === args.tierId);
         if (!tier) throw new Error(`unknown tier: ${args.tierId}`);
         const size = Number(args.size);
+        if (size <= 0) throw new Error("size must be positive");
         if (tier.allocated + size > tier.supply) throw new Error("allocation exceeds the tier's remaining supply");
         const price = Number(tier.basePrice) * (1 + (tier.allocated * tier.demandBps) / 10000);
         const eventTime = (store.events[idx].payload as unknown as { eventTime: string }).eventTime;
@@ -500,7 +531,14 @@ function arrayFor(template: unknown): Contract<object>[] {
   return [];
 }
 
-const mockLedger = new MockLedger() as unknown as Ledger;
+// Exported as a plain value (not a hook) so api.ts's useSession/useCatalog
+// can call React hooks (useQuery, etc.) directly and unconditionally
+// themselves, using this as a plain data dependency — a hook whose identity
+// only becomes available after this module's dynamic import resolves can't
+// safely be called conditionally from inside another hook (see
+// useDemoModule in api.ts).
+export const mockLedger = new MockLedger() as unknown as Ledger;
+export { partyForRole };
 
 // ---------------------------------------------------------------------------
 // The api.ts-shaped surface: everything that talks to the network directly
@@ -514,23 +552,6 @@ export async function loadDemoParties(): Promise<DemoParties> {
   ensureRunning();
   await delay(250);
   return P;
-}
-
-export function useSession(partyKey: RoleKey | null): { session: Session | null; ledger: Ledger | null } {
-  const [party, setParty] = useState<string | null>(null);
-  useEffect(() => {
-    setParty(partyKey ? partyForRole(partyKey) : null);
-  }, [partyKey]);
-  // token === party: nothing here verifies a signature, so there is no
-  // separate credential to mint — see topUp below, which relies on this.
-  const session = party ? { token: party, party } : null;
-  return { session, ledger: session ? mockLedger : null };
-}
-
-export function useCatalog(): CatalogResult {
-  const events = useQuery(mockLedger, Event);
-  const allocs = useQuery(mockLedger, TierAllocation);
-  return { events, allocs };
 }
 
 export async function topUp(fanToken: string, amount: number): Promise<void> {

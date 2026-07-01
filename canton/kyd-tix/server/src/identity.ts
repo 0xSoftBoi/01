@@ -34,8 +34,10 @@ export function authRouter(parties: DemoParties, jsonApiBaseUrl: string, ensureU
     "/auth/login",
     asyncRoute(async (req, res) => {
       const partyKey = req.body?.partyKey;
-      const partyId = typeof partyKey === "string" ? loginable[partyKey] : undefined;
-      if (!partyId || typeof partyKey !== "string") {
+      const isLoginable =
+        typeof partyKey === "string" && Object.prototype.hasOwnProperty.call(loginable, partyKey);
+      const partyId = isLoginable ? loginable[partyKey] : undefined;
+      if (!isLoginable || typeof partyId !== "string") {
         res.status(403).json({ error: "unknown or non-loginable party" });
         return;
       }

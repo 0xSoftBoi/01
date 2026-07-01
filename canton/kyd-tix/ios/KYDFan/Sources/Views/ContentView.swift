@@ -36,7 +36,9 @@ struct ContentView: View {
             }
         } else {
             VStack(spacing: 12) {
-                Text("KYD").font(.system(size: 44, weight: .black))
+                Image(systemName: "arrow.down.to.line")
+                    .font(.system(size: 22, weight: .black))
+                Text("kyd labs").font(.system(size: 44, weight: .black))
                 if bootError {
                     Text("Can't reach the demo stack.").font(.headline)
                     Text("Run integration/run-local.sh and `npm run dev` in app/, set LedgerClient.host to your Mac's LAN IP for a physical device, then relaunch.")

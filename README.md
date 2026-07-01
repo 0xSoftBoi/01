@@ -29,11 +29,12 @@ Built to demonstrate the difference between *writing Daml that compiles* and
   README's hot-path analysis table maps each naive design to its Canton
   failure mode and the fix.
 - **Audited, with the receipts** — [`AUDIT.md`](canton/kyd-tix/AUDIT.md):
-  trust-model table, findings KYD-01..11 (six HIGH/MEDIUM authority and
+  trust-model table, findings KYD-01..12 (seven HIGH/MEDIUM authority and
   custody bugs found in our own code and fixed — including the operator
-  rewriting the lender register, and later a deeper one where the same
-  operator could redirect *any* locked holding to itself), and a **12-suite
-  adversarial harness where every scenario is an attack that must fail**. 35
+  rewriting the lender register, a deeper one where the same operator could
+  redirect *any* locked holding to itself, and a purchase-fill path that let
+  a fan fund a "purchase" with cash they didn't own), and a **13-suite
+  adversarial harness where every scenario is an attack that must fail**. 34
   scenarios in CI, zero warnings, divulgence-free by construction.
 - **Production-wired, not just modeled** — [`server/`](canton/kyd-tix/server/)
   is a real auth/catalog/payments backend: RS256-signed session tokens,
@@ -50,7 +51,9 @@ Built to demonstrate the difference between *writing Daml that compiles* and
   resale, gifting, door scanner, venue financing dashboard), a native SwiftUI
   iOS app, one-command demo (`make demo`), CI, and a
   [HANDOFF.md](canton/kyd-tix/HANDOFF.md) that says plainly what is verified
-  and what is scaffolded.
+  and what is scaffolded. **Live demo:** [01-35l7.vercel.app](https://01-35l7.vercel.app)
+  — the same web app, deployed standalone with no Canton backend behind it
+  (`VITE_DEMO_MODE`, see [`app/README.md`](canton/kyd-tix/app/README.md#standalone-demo-build-no-canton-behind-it)).
 
 <p align="center">
   <img src="canton/kyd-tix/docs/screenshots/01-discover.png" width="220" alt="Discover tab: tiered dynamic pricing" />

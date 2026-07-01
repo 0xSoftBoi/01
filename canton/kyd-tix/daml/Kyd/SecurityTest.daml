@@ -328,3 +328,26 @@ testLockedFundsCustody = do
   -- designed for).
   _ <- submit c.operator $ exerciseCmd commitment.locked (Cash_SettleLocked with newOwner = c.venue)
   pure ()
+
+-- 13. Purchase-order cash ownership (audit KYD-12): the fan's own signatory
+--     authority on a PurchaseOrder is what makes 'PurchaseOrder_Fill's
+--     Cash_Transfer authorized at all — without an explicit ownership check,
+--     a fan could name a cashCid they don't own (e.g. the operator's own
+--     cash, whose authority is trivially present as the exercising
+--     controller) and the operator's automated fill would spend someone
+--     else's money to "pay" for the fan's ticket.
+testPurchaseOrderCashOwnership : Script ()
+testPurchaseOrderCashOwnership = do
+  c <- setupCast
+  ev <- makeEvent c
+  (_ev1, alloc) <- openGA c ev 1
+  opCash <- mint c c.operator 50.0
+  order <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = opCash
+  submitMustFail c.operator $ exerciseCmd order (PurchaseOrder_Fill with allocationCid = alloc)
+  -- The legitimate route — cash actually owned by the fan — still works.
+  n50 <- mint c c.alice 50.0
+  order2 <- submit c.alice $ createCmd PurchaseOrder with
+    operator = c.operator, venue = c.venue, fan = c.alice, eventId = "SHOW-001", tierId = "GA", cashCid = n50
+  _ <- submit c.operator $ exerciseCmd order2 (PurchaseOrder_Fill with allocationCid = alloc)
+  pure ()
