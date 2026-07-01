@@ -21,6 +21,23 @@ Two independent participant nodes — `p1` and `p2`, each its own storage/trust
 boundary — both connected to one synchronization domain (`mydomain`,
 protocol version 7). Operator + Alice are hosted on `p1`; Bob on `p2`.
 
+```mermaid
+flowchart LR
+  subgraph p1["Participant p1"]
+    Operator
+    VenueA["Venue A"]
+    Artist
+    Alice
+  end
+  subgraph p2["Participant p2"]
+    VenueB["Venue B, competing"]
+    Bob
+  end
+  Domain["Synchronization domain<br/>mydomain, protocol v7"]
+  p1 <--> Domain
+  p2 <--> Domain
+```
+
 ## What the proof asserts (`daml/PrivacyProof.daml`)
 
 Every assertion is **race-free** — each query is local to the queried party's

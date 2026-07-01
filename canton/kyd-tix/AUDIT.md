@@ -196,6 +196,25 @@ the venue's authority from `SyndicatedLoan`'s own signatories, while a
 standalone call needs the venue live). `Receipt_Release` is now
 `controller operator, venue` for the same reason, closing the wrapper-level
 route in addition to the direct one.
+
+```mermaid
+flowchart TB
+  subgraph Before["Before KYD-11"]
+    O1["Operator, its own key only"] -->|"Cash_SettleLocked newOwner = self"| C1["ANY Cash contract, locked or not"]
+    C1 --> R1["settles -- no check at all"]
+  end
+  subgraph After["After KYD-11"]
+    O2["Operator"] -->|"Cash_SettleLocked newOwner"| Q1{"holding is locked?"}
+    Q1 -->|"no"| Rej["rejected"]
+    Q1 -->|"yes"| Q2{"newOwner == lockRecipient?"}
+    Q2 -->|"no"| Rej
+    Q2 -->|"yes, recipient is operator"| Q3{"lockCoSigner authorized?"}
+    Q3 -->|"no"| Rej
+    Q3 -->|"yes"| Ok["settled"]
+    Q2 -->|"yes, recipient is not operator"| Ok
+  end
+```
+
 Verified by `testLockedFundsCustody`: a never-locked note cannot be settled;
 the operator cannot lock Alice's cash without her; a locked commitment
 cannot be redirected to the operator (only ever to its true venue); the

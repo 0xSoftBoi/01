@@ -182,6 +182,27 @@ TrancheOffer_Accept(cash) [buyer + operator]:            (atomic DvP, KYC-gated)
     price -> seller; register: face moves seller -> buyer
 ```
 
+The paid-sale leg above, as a sequence:
+
+```mermaid
+sequenceDiagram
+  participant Fan
+  participant Operator
+  participant Shard as TierAllocation shard
+  participant Venue
+  participant Loan as SyndicatedLoan
+
+  Fan->>Operator: PurchaseOrder(tier, cash)
+  Operator->>Shard: PurchaseOrder_Fill
+  Shard->>Shard: assert payment == price
+  Shard->>Venue: payment
+  Shard->>Shard: carve financing share into RevenueShare, locked, create-only
+  Shard-->>Fan: Ticket minted
+  Note over Operator,Loan: later, batched
+  Operator->>Loan: Loan_SweepRevenue receipts
+  Loan-->>Loan: pro-rata to lenders, excess to venue
+```
+
 The paid primary sale is the piece that makes TIX's *"ticket revenue
 automatically enforces repayment"* literal on Canton: at the moment of sale the
 lenders' share is locked in place on the venue's own holding (the venue keeps
@@ -201,6 +222,25 @@ This model is shaped by Canton's execution semantics, not just Daml's type
 system. Per the official [contention guidance](https://docs.daml.com/daml/resource-management/contention-avoiding.html):
 only one consuming choice can ever be exercised per contract, so any contract
 consumed on a high-frequency path serializes that path and causes retry storms.
+
+```mermaid
+flowchart TB
+  Event["Event -- cold master<br/>tier policies, demand curve"]
+  Event -->|"Event_OpenAllocation"| TA1["TierAllocation shard 1<br/>disjoint serial range"]
+  Event -->|"Event_OpenAllocation"| TA2["TierAllocation shard 2<br/>disjoint serial range"]
+  Event -->|"Event_OpenAllocation"| TA3["TierAllocation shard N<br/>disjoint serial range"]
+  TA1 -->|"Allocation_IssuePaid"| T1["Ticket"]
+  TA2 -->|"Allocation_IssuePaid"| T2["Ticket"]
+  TA3 -->|"Allocation_IssuePaid"| T3["Ticket"]
+  TA1 -.->|"create-only receipt"| RS["RevenueShare<br/>never contends"]
+  TA2 -.->|"create-only receipt"| RS
+  TA3 -.->|"create-only receipt"| RS
+  RS -->|"Loan_SweepRevenue, batched"| Loan["SyndicatedLoan"]
+```
+
+Solid arrows are the hot path (N parallel sales streams, no shared write);
+dotted arrows are create-only (never contend); the loan is touched once per
+*batch*, not once per ticket — measured below at 8.7–13.7x throughput.
 
 **Hot-path analysis and the fixes:**
 

@@ -5,6 +5,29 @@ honestly labeled. Start here, then `README.md` for the architecture story and
 `DESIGN.md` for the decision record (why each choice, and the open questions
 for KYD).
 
+```mermaid
+flowchart LR
+  APP["app/<br/>React PWA"]
+  IOS["ios/KYDFan<br/>SwiftUI source"]
+  SERVER["server/<br/>auth + JWKS + catalog proxy + PSP webhook"]
+  JSONAPI["JSON API"]
+  DAML["daml/<br/>Kyd.* modules, 35 scenarios"]
+  TRIGGERS["Kyd.Triggers<br/>autoFill / sweep / accrue"]
+  PROOFS["privacy-proof/ + server/auth-proof/<br/>real multi-participant Canton"]
+
+  APP -->|"login, buy, resell"| SERVER
+  IOS -.->|"login, buy, resell"| SERVER
+  SERVER -->|"signed RS256 token"| JSONAPI
+  TRIGGERS --> JSONAPI
+  JSONAPI --> DAML
+  PROOFS -.->|"proves live against"| DAML
+  PROOFS -.->|"proves live against"| SERVER
+```
+
+The dotted edges are the two things this repo *proves against a real running
+Canton*, not just tests in-memory — see `privacy-proof/README.md` and
+`server/README.md`'s `auth-proof/` section.
+
 ## One-command map
 
 ```
