@@ -13,6 +13,8 @@ This supplements the root `AGENTS.md` with a repo-local ECC baseline.
 Treat `.codex/config.toml` as the default ECC-safe baseline for work in this repository.
 The generated baseline enables GitHub, Context7, Exa, Memory, Playwright, and Sequential Thinking.
 
+For opt-in web research with Parallel Search MCP, see [the research guide](RESEARCH.md).
+
 ## Multi-Agent Support
 
 - Explorer: read-only evidence gathering
